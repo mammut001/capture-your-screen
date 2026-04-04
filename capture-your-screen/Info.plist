@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Prevent dock icon; app lives entirely in the menu bar -->
+    <key>LSUIElement</key>
+    <true/>
+
+    <!-- Screen Recording permission prompt description -->
+    <key>NSScreenCaptureUsageDescription</key>
+    <string>Capture Your Screen needs permission to capture your screen when you use the screenshot hotkey.</string>
+
+    <!-- User Notifications -->
+    <key>NSUserNotificationUsageDescription</key>
+    <string>Capture Your Screen sends a brief notification after each screenshot is saved.</string>
+</dict>
+</plist>
