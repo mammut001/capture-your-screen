@@ -1,9 +1,8 @@
 import Foundation
 import AppKit
+import Vision
 
-/// 预留 — OCR Service Protocol
-/// v1 does not implement this. The interface is reserved for future OCR
-/// integration (e.g. Apple Vision framework) without architectural changes.
+/// OCR Service Protocol — extract text from screenshots.
 protocol OCRServiceProtocol: Sendable {
     /// Extract text from the given image.
     /// - Parameter image: The source image (screenshot).
@@ -32,9 +31,83 @@ enum OCRError: Error, LocalizedError {
     }
 }
 
-// 预留: Future implementation using Apple Vision
-// final class VisionOCRService: OCRServiceProtocol {
-//     func extractText(from image: NSImage) async throws -> String {
-//         // Uses VNRecognizeTextRequest internally
-//     }
-// }
+// MARK: - Vision Framework Implementation
+
+/// Fully offline OCR using Apple's Vision framework.
+/// Supports Chinese (Simplified + Traditional), English, Japanese, Korean.
+final class VisionOCRService: OCRServiceProtocol, @unchecked Sendable {
+
+    func extractText(from image: NSImage) async throws -> String {
+        guard let cgImage = image.cgImage(
+            forProposedRect: nil, context: nil, hints: nil
+        ) else {
+            throw OCRError.imageTooSmall
+        }
+
+        // Minimum image size sanity check
+        guard cgImage.width >= 10, cgImage.height >= 10 else {
+            throw OCRError.imageTooSmall
+        }
+
+        return try await withCheckedThrowingContinuation { continuation in
+            let request = VNRecognizeTextRequest { request, error in
+                if let error {
+                    continuation.resume(
+                        throwing: OCRError.processingFailed(error.localizedDescription)
+                    )
+                    return
+                }
+
+                guard let observations = request.results as? [VNRecognizedTextObservation],
+                      !observations.isEmpty else {
+                    continuation.resume(throwing: OCRError.noTextFound)
+                    return
+                }
+
+                // Sort observations by vertical position (top → bottom),
+                // then by horizontal position (left → right) within the same line.
+                let sorted = observations.sorted { a, b in
+                    // Vision uses bottom-left origin; higher Y = closer to top of image.
+                    let ay = a.boundingBox.midY
+                    let by = b.boundingBox.midY
+                    // If roughly on the same line (within 2% of image height), sort left→right.
+                    if abs(ay - by) < 0.02 {
+                        return a.boundingBox.minX < b.boundingBox.minX
+                    }
+                    // Otherwise top→bottom (higher Y first).
+                    return ay > by
+                }
+
+                let text = sorted
+                    .compactMap { $0.topCandidates(1).first?.string }
+                    .joined(separator: "\n")
+
+                if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    continuation.resume(throwing: OCRError.noTextFound)
+                } else {
+                    continuation.resume(returning: text)
+                }
+            }
+
+            // Configuration
+            request.recognitionLevel = .accurate
+            request.recognitionLanguages = [
+                "zh-Hans",  // Simplified Chinese
+                "zh-Hant",  // Traditional Chinese
+                "en-US",    // English
+                "ja",       // Japanese
+                "ko",       // Korean
+            ]
+            request.usesLanguageCorrection = true
+
+            let handler = VNImageRequestHandler(cgImage: cgImage, options: [:])
+            do {
+                try handler.perform([request])
+            } catch {
+                continuation.resume(
+                    throwing: OCRError.processingFailed(error.localizedDescription)
+                )
+            }
+        }
+    }
+}

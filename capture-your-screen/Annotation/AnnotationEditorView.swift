@@ -30,7 +30,7 @@ struct AnnotationEditorView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            AnnotationToolbar(canvas: canvas)
+            AnnotationToolbar(canvas: canvas, baseImage: baseImage)
 
             Divider()
 

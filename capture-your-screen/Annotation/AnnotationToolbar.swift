@@ -8,6 +8,17 @@ import SwiftUI
 struct AnnotationToolbar: View {
     @ObservedObject var canvas: AnnotationCanvas
 
+    /// Base image for OCR extraction.
+    var baseImage: NSImage? = nil
+
+    @State private var isProcessingOCR = false
+    @State private var showOCRPopover = false
+    @State private var ocrResult: String? = nil
+    @State private var ocrError: String? = nil
+    @State private var showCopiedToast = false
+
+    private let ocrService = VisionOCRService()
+
     var body: some View {
         HStack(spacing: 6) {
             // Tool buttons
@@ -54,6 +65,38 @@ struct AnnotationToolbar: View {
 
             Spacer(minLength: 8)
 
+            // OCR button
+            if baseImage != nil {
+                Button(action: performOCR) {
+                    HStack(spacing: 4) {
+                        if isProcessingOCR {
+                            ProgressView()
+                                .controlSize(.small)
+                                .scaleEffect(0.7)
+                        } else {
+                            Image(systemName: "text.viewfinder")
+                                .font(.system(size: 13, weight: .medium))
+                        }
+                        Text("OCR")
+                            .font(.system(size: 12, weight: .medium))
+                    }
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(
+                        RoundedRectangle(cornerRadius: 6)
+                            .fill(Color.accentColor.opacity(showOCRPopover ? 0.2 : 0.0))
+                    )
+                }
+                .buttonStyle(.borderless)
+                .disabled(isProcessingOCR)
+                .help("Extract text from screenshot (OCR)")
+                .popover(isPresented: $showOCRPopover, arrowEdge: .bottom) {
+                    ocrPopoverContent
+                }
+            }
+
+            Divider().frame(height: 22).padding(.horizontal, 4)
+
             // Undo / Redo / Delete
             Button(action: canvas.undo) {
                 Image(systemName: "arrow.uturn.backward")
@@ -79,6 +122,108 @@ struct AnnotationToolbar: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
         .background(.ultraThinMaterial)
+    }
+
+    // MARK: - OCR
+
+    private func performOCR() {
+        guard let image = baseImage else { return }
+        isProcessingOCR = true
+        ocrResult = nil
+        ocrError = nil
+
+        Task {
+            do {
+                let text = try await ocrService.extractText(from: image)
+                await MainActor.run {
+                    ocrResult = text
+                    ocrError = nil
+                    isProcessingOCR = false
+                    showOCRPopover = true
+                }
+            } catch {
+                await MainActor.run {
+                    ocrResult = nil
+                    ocrError = error.localizedDescription
+                    isProcessingOCR = false
+                    showOCRPopover = true
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var ocrPopoverContent: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Image(systemName: "text.viewfinder")
+                    .foregroundStyle(.secondary)
+                Text("Extracted Text")
+                    .font(.headline)
+                Spacer()
+            }
+
+            if let text = ocrResult {
+                ScrollView {
+                    Text(text)
+                        .font(.system(size: 13, design: .monospaced))
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(8)
+                        .background(
+                            RoundedRectangle(cornerRadius: 6)
+                                .fill(Color(nsColor: .textBackgroundColor))
+                        )
+                }
+                .frame(maxHeight: 250)
+
+                HStack {
+                    Text("\(text.components(separatedBy: .newlines).count) lines · \(text.count) characters")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+
+                    Spacer()
+
+                    if showCopiedToast {
+                        Label("Copied!", systemImage: "checkmark.circle.fill")
+                            .font(.caption)
+                            .foregroundStyle(.green)
+                            .transition(.scale.combined(with: .opacity))
+                    }
+
+                    Button(action: {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(text, forType: .string)
+                        withAnimation(.spring(response: 0.3)) {
+                            showCopiedToast = true
+                        }
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                            withAnimation { showCopiedToast = false }
+                        }
+                    }) {
+                        Label("Copy All", systemImage: "doc.on.doc")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                }
+            } else if let error = ocrError {
+                HStack(spacing: 8) {
+                    Image(systemName: "exclamationmark.triangle")
+                        .foregroundStyle(.orange)
+                    Text(error)
+                        .font(.system(size: 13))
+                        .foregroundStyle(.secondary)
+                }
+                .padding(8)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(Color.orange.opacity(0.1))
+                )
+            }
+        }
+        .padding(16)
+        .frame(width: 380)
     }
 }
 

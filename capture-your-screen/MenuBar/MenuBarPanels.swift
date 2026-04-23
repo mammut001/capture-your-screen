@@ -410,7 +410,12 @@ struct MenuBarView: View {
             }
 
             VStack(spacing: 14) {
-                CompactCalendarView(selectedDate: $pendingDate)
+                CompactCalendarView(
+                    selectedDate: $pendingDate,
+                    datesWithScreenshots: Set(
+                        viewModel.historySections.map { Calendar.current.startOfDay(for: $0.date) }
+                    )
+                )
                     .frame(maxWidth: .infinity)
 
                 HStack(spacing: 10) {
@@ -498,14 +503,16 @@ struct MenuBarView: View {
 
 private struct CompactCalendarView: View {
     @Binding var selectedDate: Date
+    let datesWithScreenshots: Set<Date>
     @State private var displayedMonth: Date
     @GestureState private var dragTranslation: CGFloat = 0
 
     private let calendar = Calendar.current
     private let weekdays = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
 
-    init(selectedDate: Binding<Date>) {
+    init(selectedDate: Binding<Date>, datesWithScreenshots: Set<Date>) {
         _selectedDate = selectedDate
+        self.datesWithScreenshots = datesWithScreenshots
         let month = Calendar.current.date(from: Calendar.current.dateComponents([.year, .month], from: selectedDate.wrappedValue)) ?? Date()
         _displayedMonth = State(initialValue: month)
     }
@@ -540,11 +547,18 @@ private struct CompactCalendarView: View {
 
                 ForEach(monthCells) { cell in
                     Button(action: { selectedDate = cell.date }) {
-                        Text("\(calendar.component(.day, from: cell.date))")
-                            .font(.system(size: 17, weight: isSelected(cell.date) ? .bold : .medium))
-                            .foregroundColor(textColor(for: cell.date, isCurrentMonth: cell.isCurrentMonth))
-                            .frame(width: 42, height: 42)
-                            .background(selectionBackground(for: cell.date))
+                        VStack(spacing: 2) {
+                            Text("\(calendar.component(.day, from: cell.date))")
+                                .font(.system(size: 17, weight: isSelected(cell.date) ? .bold : .medium))
+                                .foregroundColor(textColor(for: cell.date, isCurrentMonth: cell.isCurrentMonth))
+
+                            Circle()
+                                .fill(Color.green)
+                                .frame(width: 5, height: 5)
+                                .opacity(showsScreenshotDot(for: cell.date, isCurrentMonth: cell.isCurrentMonth) ? 1 : 0)
+                        }
+                        .frame(width: 42, height: 42)
+                        .background(selectionBackground(for: cell.date))
                     }
                     .buttonStyle(.plain)
                     .disabled(cell.date > Date())
@@ -661,6 +675,11 @@ private struct CompactCalendarView: View {
             return .white
         }
         return isCurrentMonth ? .primary : .secondary.opacity(0.5)
+    }
+
+    private func showsScreenshotDot(for date: Date, isCurrentMonth: Bool) -> Bool {
+        guard isCurrentMonth, date <= Date() else { return false }
+        return datesWithScreenshots.contains(calendar.startOfDay(for: date))
     }
 }
 
