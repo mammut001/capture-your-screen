@@ -5,17 +5,61 @@ import SwiftUI
 
 @MainActor
 final class MenuBarViewModel: ObservableObject {
-    @Published var historyGroups: [HistoryGroup: [ScreenshotHistoryItem]] = [:]
+    @Published var historySections: [ScreenshotDaySection] = []
     @Published var currentHotkeyDisplay: String = HotkeyConfiguration.default.displayString
     @Published var isCapturing: Bool = false
     @Published var errorMessage: String?
+    @Published var selectedItem: ScreenshotHistoryItem?
+    @Published var showCopyToast: Bool = false
+    @Published var browsingByDate: Bool = false
+    @Published var selectedDate: Date = Date()
+    @Published var screenshotsForSelectedDate: [ScreenshotHistoryItem] = []
 
     private let captureCoordinator: CaptureCoordinator
     private let screenshotStore: ScreenshotStore
+    private let hotkeyManager: HotkeyManager
+    private var cancellables = Set<AnyCancellable>()
 
-    init(captureCoordinator: CaptureCoordinator, screenshotStore: ScreenshotStore) {
+    init(captureCoordinator: CaptureCoordinator, screenshotStore: ScreenshotStore, hotkeyManager: HotkeyManager) {
         self.captureCoordinator = captureCoordinator
         self.screenshotStore = screenshotStore
+        self.hotkeyManager = hotkeyManager
+        self.currentHotkeyDisplay = hotkeyManager.currentConfig.displayString
+
+        // Keep currentHotkeyDisplay in sync whenever the hotkey is changed
+        hotkeyManager.$currentConfig
+            .receive(on: RunLoop.main)
+            .sink { [weak self] config in
+                self?.currentHotkeyDisplay = config.displayString
+            }
+            .store(in: &cancellables)
+
+        // Automatically rebuild history groups whenever the store changes
+        screenshotStore.$screenshots
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in
+                self?.rebuildSections()
+            }
+            .store(in: &cancellables)
+
+        // Track captureCoordinator state so isCapturing stays accurate
+        captureCoordinator.$state
+            .receive(on: RunLoop.main)
+            .sink { [weak self] state in
+                self?.isCapturing = (state == .capturing)
+            }
+            .store(in: &cancellables)
+
+        captureCoordinator.$lastError
+            .receive(on: RunLoop.main)
+            .sink { [weak self] error in
+                guard let error else { return }
+                self?.showError(error.localizedDescription)
+            }
+            .store(in: &cancellables)
+
+        // Initial build
+        rebuildSections()
     }
 
     // MARK: - Actions
@@ -25,14 +69,6 @@ final class MenuBarViewModel: ObservableObject {
     }
 
     func openScreenshotFolder() {
-        // If the user hasn't explicitly chosen a folder, ask them to pick one first.
-        if screenshotStore.resolver.customFolderURL == nil {
-            NSApp.activate(ignoringOtherApps: true)
-            chooseScreenshotFolder()
-            // If they cancel out of the dialog, stop here
-            if screenshotStore.resolver.customFolderURL == nil { return }
-        }
-
         let rootURL = screenshotStore.resolver.screenshotFolderURL
         
         let folderFormatter = DateFormatter()
@@ -44,25 +80,72 @@ final class MenuBarViewModel: ObservableObject {
         let targetURL = FileManager.default.fileExists(atPath: todayFolderURL.path) ? todayFolderURL : rootURL
         
         try? FileManager.default.createDirectory(at: targetURL, withIntermediateDirectories: true)
-        NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: targetURL.path)
-        
-        // Force Finder to come to the front
-        if let finder = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.finder").first {
-            finder.activate(options: .activateIgnoringOtherApps)
+
+        // Select the first file in the folder so Finder opens and highlights it;
+        // fall back to selecting the folder itself when it is empty.
+        let fileToSelect: URL
+        if let firstFile = FileManager.default.enumerator(
+            at: targetURL,
+            includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles]
+        )?.nextObject() as? URL {
+            fileToSelect = firstFile
+        } else {
+            fileToSelect = targetURL
+        }
+        NSWorkspace.shared.activateFileViewerSelecting([fileToSelect])
+    }
+
+    /// Direct copy — used by context menu (no confirm step needed).
+    func copyScreenshot(_ item: ScreenshotHistoryItem) {
+        guard let image = loadImage(for: item) else { return }
+        writeImageToPasteboard(image)
+        showCopySuccess()
+    }
+
+    func copyLatestScreenshot(on date: Date) {
+        guard let item = historySections.first(where: { Calendar.current.isDate($0.date, inSameDayAs: date) })?.items.first,
+              let image = loadImage(for: item) else {
+            showError("Could not copy — file not found.")
+            return
+        }
+        writeImageToPasteboard(image)
+        showCopySuccess()
+    }
+
+    /// Stage a row for copy (first tap); deselects if already selected.
+    func selectItem(_ item: ScreenshotHistoryItem) {
+        withAnimation(.easeInOut(duration: 0.2)) {
+            if selectedItem?.id == item.id {
+                selectedItem = nil
+            } else {
+                selectedItem = item
+            }
         }
     }
 
-    func copyScreenshot(_ item: ScreenshotHistoryItem) {
-        try? screenshotStore.copyToClipboard(id: item.id)
+    /// Execute copy after the user confirms (second tap on the green button).
+    func confirmCopy(_ item: ScreenshotHistoryItem) {
+        copyScreenshot(item)
+        selectedItem = nil
+    }
+
+    private func showError(_ message: String) {
+        errorMessage = message
+        // Auto-clear after 3 s so the banner doesn't linger.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
+            if self?.errorMessage == message { self?.errorMessage = nil }
+        }
     }
 
     func showInFinder(_ item: ScreenshotHistoryItem) {
+        guard FileManager.default.fileExists(atPath: item.url.path) else { return }
         NSWorkspace.shared.activateFileViewerSelecting([item.url])
     }
 
     func deleteScreenshot(_ item: ScreenshotHistoryItem) {
         try? screenshotStore.delete(id: item.id)
-        rebuildGroups()
+        rebuildSections()
     }
 
     /// Human-readable display of the current save folder path.
@@ -98,22 +181,83 @@ final class MenuBarViewModel: ObservableObject {
 
     func refresh() async {
         await screenshotStore.refreshHistory()
-        rebuildGroups()
+        rebuildSections()
     }
 
     // MARK: - Internal
 
-    func rebuildGroups() {
+    func rebuildSections() {
         let items = screenshotStore.screenshots.map { $0.toHistoryItem() }
-        var groups: [HistoryGroup: [ScreenshotHistoryItem]] = [:]
-        for item in items {
-            let group = HistoryGroup.group(for: item.date)
-            groups[group, default: []].append(item)
+        let groupedByDay = Dictionary(grouping: items) { item in
+            Calendar.current.startOfDay(for: item.date)
         }
-        historyGroups = groups
+
+        historySections = groupedByDay
+            .map { date, dayItems in
+                ScreenshotDaySection(
+                    date: date,
+                    items: dayItems.sorted { $0.date > $1.date }
+                )
+            }
+            .sorted { $0.date > $1.date }
+
+        if browsingByDate { rebuildDateGroup() }
+    }
+
+    func toggleDateBrowsing() {
+        if browsingByDate {
+            browsingByDate = false
+        } else {
+            selectedDate = Date()
+            browsingByDate = true
+            rebuildDateGroup()
+        }
+    }
+
+    func setSelectedDate(_ date: Date) {
+        selectedDate = date
+        browsingByDate = true
+        rebuildDateGroup()
+    }
+
+    func rebuildDateGroup() {
+        let cal = Calendar.current
+        let all = screenshotStore.screenshots.map { $0.toHistoryItem() }
+        screenshotsForSelectedDate = all.filter { cal.isDate($0.date, inSameDayAs: selectedDate) }
+    }
+
+    func clearDateFilter() {
+        browsingByDate = false
     }
 
     func updateHotkeyDisplay(_ display: String) {
         currentHotkeyDisplay = display
+    }
+
+    private func loadImage(for item: ScreenshotHistoryItem) -> NSImage? {
+        guard FileManager.default.fileExists(atPath: item.url.path),
+              let image = NSImage(contentsOf: item.url) else {
+            showError("Could not copy — file not found.")
+            return nil
+        }
+        return image
+    }
+
+    private func writeImageToPasteboard(_ image: NSImage) {
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.writeObjects([image])
+    }
+
+    private func showCopySuccess() {
+        withAnimation(.easeInOut(duration: 0.3)) {
+            showCopyToast = true
+        }
+        Task {
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            withAnimation(.easeInOut(duration: 0.3)) {
+                showCopyToast = false
+            }
+        }
     }
 }

@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import CoreGraphics
 
 /// Full-screen SwiftUI overlay for area selection.
 /// Renders a dark, semi-transparent veil over the screen with a clear cutout
@@ -7,14 +8,17 @@ import AppKit
 struct SelectionOverlayView: View {
     let onConfirm: (CGRect) -> Void
     let onCancel: () -> Void
+    let screen: NSScreen
+    let hotkeyConfig: HotkeyConfiguration
 
     @State private var selection: CGRect? = nil
     @State private var dragStart: CGPoint? = nil
     @State private var isSelectionFinalized: Bool = false
-    @FocusState private var isFocused: Bool
+    @State private var showKeyVisualizer: Bool = false
     @State private var eventMonitor: Any?
 
     private let minSelectionSize: CGFloat = 10
+    private let clickSelectionThreshold: CGFloat = 6
 
     var body: some View {
         GeometryReader { geo in
@@ -32,19 +36,30 @@ struct SelectionOverlayView: View {
                     }
                 }
 
-                // Instruction label at top center
-                VStack {
-                    instructionLabel
-                        .padding(.top, 60)
-                    Spacer()
+                // Instruction label — fixed at top, never moves
+                instructionLabel
+                    .padding(.top, 24)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+
+                // Key visualizer — overlaid independently so it doesn't shift the label
+                if showKeyVisualizer {
+                    KeyVisualizerView(config: hotkeyConfig, isActive: false)
+                        .transition(.scale(scale: 0.85).combined(with: .opacity))
+                        .padding(.top, 72)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .contentShape(Rectangle())
             .gesture(dragGesture)
             .onAppear {
-                isFocused = true
                 NSCursor.crosshair.push()
+                initializeDefaultSelectionAtMouseLocation()
+                // Briefly flash the active hotkey as visual confirmation
+                withAnimation(.spring(response: 0.3, dampingFraction: 0.6)) { showKeyVisualizer = true }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                    withAnimation(.easeInOut(duration: 0.2)) { showKeyVisualizer = false }
+                }
                 eventMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
                     if event.keyCode == 53 { // Escape
                         // Defer to next run loop to avoid re-entrancy while inside event callback
@@ -72,8 +87,6 @@ struct SelectionOverlayView: View {
                     NSEvent.removeMonitor(monitor)
                 }
             }
-            .focusable()
-            .focused($isFocused)
         }
         .ignoresSafeArea()
     }
@@ -124,7 +137,7 @@ struct SelectionOverlayView: View {
     }
 
     private var instructionLabel: some View {
-        Text("Drag to select — Esc to cancel, ↵ to capture")
+        Text("Click a window or drag to select — Esc to cancel, ↵ to capture")
             .font(.system(size: 13, weight: .medium))
             .foregroundColor(.white)
             .padding(.horizontal, 16)
@@ -137,8 +150,19 @@ struct SelectionOverlayView: View {
     private var dragGesture: some Gesture {
         DragGesture(minimumDistance: 0, coordinateSpace: .local)
             .onChanged { value in
-                let start = value.startLocation
+                let start = dragStart ?? value.startLocation
+                if dragStart == nil {
+                    dragStart = value.startLocation
+                    isSelectionFinalized = false
+                }
+
                 let current = value.location
+
+                guard distanceBetween(start, current) > clickSelectionThreshold else {
+                    selection = nil
+                    return
+                }
+
                 selection = CGRect(
                     x: min(start.x, current.x),
                     y: min(start.y, current.y),
@@ -146,8 +170,30 @@ struct SelectionOverlayView: View {
                     height: abs(current.y - start.y)
                 )
             }
-            .onEnded { _ in
-                isSelectionFinalized = true
+            .onEnded { value in
+                let start = dragStart ?? value.startLocation
+                let end = value.location
+                dragStart = nil
+
+                guard distanceBetween(start, end) > clickSelectionThreshold else {
+                    if let autoSelection = autoSelectionRect(at: end) {
+                        selection = autoSelection
+                        isSelectionFinalized = true
+                    } else {
+                        selection = nil
+                        isSelectionFinalized = false
+                    }
+                    return
+                }
+
+                if let rect = selection,
+                   rect.width >= minSelectionSize,
+                   rect.height >= minSelectionSize {
+                    isSelectionFinalized = true
+                } else {
+                    selection = nil
+                    isSelectionFinalized = false
+                }
             }
     }
 
@@ -194,6 +240,153 @@ struct SelectionOverlayView: View {
               rect.width >= minSelectionSize,
               rect.height >= minSelectionSize else { return }
         onConfirm(rect)
+    }
+
+    private func distanceBetween(_ lhs: CGPoint, _ rhs: CGPoint) -> CGFloat {
+        hypot(rhs.x - lhs.x, rhs.y - lhs.y)
+    }
+
+    private func initializeDefaultSelectionAtMouseLocation() {
+        let desktopMaxY = NSScreen.screens.map(\.frame.maxY).max() ?? screen.frame.maxY
+        let pointer = NSEvent.mouseLocation
+        let pointerInGlobalTopLeft = CGPoint(
+            x: pointer.x,
+            y: desktopMaxY - pointer.y
+        )
+
+        guard let windowBounds = topmostWindowBounds(containing: pointerInGlobalTopLeft) else {
+            selection = nil
+            isSelectionFinalized = false
+            return
+        }
+
+        let screenRect = screenFrameInGlobalTopLeftCoordinates
+        let clippedBounds = windowBounds.intersection(screenRect)
+        guard !clippedBounds.isNull,
+              clippedBounds.width >= minSelectionSize,
+              clippedBounds.height >= minSelectionSize else {
+            selection = nil
+            isSelectionFinalized = false
+            return
+        }
+
+        selection = CGRect(
+            x: clippedBounds.minX - screenRect.minX,
+            y: clippedBounds.minY - screenRect.minY,
+            width: clippedBounds.width,
+            height: clippedBounds.height
+        ).integral
+        isSelectionFinalized = true
+    }
+
+    private func autoSelectionRect(at localPoint: CGPoint) -> CGRect? {
+        let screenRect = screenFrameInGlobalTopLeftCoordinates
+        let globalPoint = CGPoint(
+            x: screenRect.minX + localPoint.x,
+            y: screenRect.minY + localPoint.y
+        )
+
+        guard let windowBounds = topmostWindowBounds(containing: globalPoint) else {
+            return nil
+        }
+
+        let clippedBounds = windowBounds.intersection(screenRect)
+        guard !clippedBounds.isNull,
+              clippedBounds.width >= minSelectionSize,
+              clippedBounds.height >= minSelectionSize else {
+            return nil
+        }
+
+        return CGRect(
+            x: clippedBounds.minX - screenRect.minX,
+            y: clippedBounds.minY - screenRect.minY,
+            width: clippedBounds.width,
+            height: clippedBounds.height
+        ).integral
+    }
+
+    private func topmostWindowBounds(containing point: CGPoint) -> CGRect? {
+        guard let windowInfoList = CGWindowListCopyWindowInfo(
+            [.optionOnScreenOnly, .excludeDesktopElements],
+            kCGNullWindowID
+        ) as? [[String: Any]] else {
+            return nil
+        }
+
+        let appName = Bundle.main.object(forInfoDictionaryKey: kCFBundleNameKey as String) as? String
+
+        for windowInfo in windowInfoList {
+            guard isSelectableWindow(windowInfo, appName: appName),
+                  let bounds = windowBounds(from: windowInfo),
+                  bounds.contains(point) else {
+                continue
+            }
+
+            return bounds
+        }
+
+        return nil
+    }
+
+    private func isSelectableWindow(_ windowInfo: [String: Any], appName: String?) -> Bool {
+        let layer = windowInfo[kCGWindowLayer as String] as? Int ?? 0
+        guard layer == 0 else { return false }
+
+        let alpha = windowInfo[kCGWindowAlpha as String] as? Double ?? 1
+        guard alpha > 0.05 else { return false }
+
+        let isOnscreen = windowInfo[kCGWindowIsOnscreen as String] as? Int ?? 1
+        guard isOnscreen == 1 else { return false }
+
+        if let ownerName = windowInfo[kCGWindowOwnerName as String] as? String,
+           ownerName == appName {
+            return false
+        }
+
+        guard let bounds = windowBounds(from: windowInfo) else {
+            return false
+        }
+
+        return bounds.width >= minSelectionSize && bounds.height >= minSelectionSize
+    }
+
+    private func windowBounds(from windowInfo: [String: Any]) -> CGRect? {
+        guard let boundsDictionary = windowInfo[kCGWindowBounds as String] as? [String: Any],
+              let x = numericValue(for: "X", in: boundsDictionary),
+              let y = numericValue(for: "Y", in: boundsDictionary),
+              let width = numericValue(for: "Width", in: boundsDictionary),
+              let height = numericValue(for: "Height", in: boundsDictionary) else {
+            return nil
+        }
+
+        return CGRect(x: x, y: y, width: width, height: height)
+    }
+
+    private func numericValue(for key: String, in dictionary: [String: Any]) -> CGFloat? {
+        if let number = dictionary[key] as? NSNumber {
+            return CGFloat(truncating: number)
+        }
+
+        if let doubleValue = dictionary[key] as? Double {
+            return doubleValue
+        }
+
+        if let intValue = dictionary[key] as? Int {
+            return CGFloat(intValue)
+        }
+
+        return dictionary[key] as? CGFloat
+    }
+
+    private var screenFrameInGlobalTopLeftCoordinates: CGRect {
+        let desktopMaxY = NSScreen.screens.map(\.frame.maxY).max() ?? screen.frame.maxY
+
+        return CGRect(
+            x: screen.frame.minX,
+            y: desktopMaxY - screen.frame.maxY,
+            width: screen.frame.width,
+            height: screen.frame.height
+        )
     }
 
     /// Returns all 8 handle positions (4 corners + 4 edge midpoints) for a given rect.

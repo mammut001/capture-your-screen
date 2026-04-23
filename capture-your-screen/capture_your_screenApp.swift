@@ -6,6 +6,7 @@
 //
 
 import SwiftUI
+import Combine
 import UserNotifications
 
 @main
@@ -17,12 +18,17 @@ struct capture_your_screenApp: App {
             MenuBarView()
                 .environmentObject(appDelegate.viewModel)
                 .environmentObject(appDelegate.screenshotStore)
+                .environmentObject(appDelegate.hotkeyManager)
+                .environmentObject(appDelegate.launchAtLoginManager)
+                .environmentObject(appDelegate)
         }
-        .menuBarExtraStyle(.menu)
+        .menuBarExtraStyle(.window)
 
         Window("Settings", id: "settings") {
             SettingsView()
                 .environmentObject(appDelegate.viewModel)
+                .environmentObject(appDelegate.hotkeyManager)
+                .environmentObject(appDelegate.launchAtLoginManager)
         }
         .windowResizability(.contentSize)
     }
@@ -30,20 +36,29 @@ struct capture_your_screenApp: App {
 
 // MARK: - AppDelegate
 
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     let hotkeyManager = HotkeyManager()
     let screenshotStore = ScreenshotStore()
+    let launchAtLoginManager = LaunchAtLoginManager()
+    @Published var showSettingsSheet: Bool = false
 
-    lazy var coordinator: CaptureCoordinator = CaptureCoordinator(screenshotStore: screenshotStore)
+    lazy var coordinator: CaptureCoordinator = CaptureCoordinator(
+        screenshotStore: screenshotStore,
+        hotkeyManager: hotkeyManager
+    )
 
     lazy var viewModel: MenuBarViewModel = MenuBarViewModel(
         captureCoordinator: coordinator,
-        screenshotStore: screenshotStore
+        screenshotStore: screenshotStore,
+        hotkeyManager: hotkeyManager
     )
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Request notification permission
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
+
+        // Refresh launch status (in case user changed it in System Settings while app was closed)
+        launchAtLoginManager.refreshStatus()
 
         // Wire hotkey → capture coordinator
         hotkeyManager.onHotkeyPressed = { [weak self] in
@@ -52,11 +67,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
         hotkeyManager.register()
-
-        // Sync hotkey display to view model
-        Task { @MainActor in
-            viewModel.updateHotkeyDisplay(hotkeyManager.currentConfig.displayString)
-        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {

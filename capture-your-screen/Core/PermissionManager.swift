@@ -2,16 +2,31 @@ import Foundation
 import AppKit
 import CoreGraphics
 
-struct PermissionManager {
-    /// Check Screen Recording permission synchronously using CGPreflightScreenCaptureAccess.
+/// Tracks Screen Recording permission state. Must be a class (not struct) because
+/// it is stored as a `let` in CaptureCoordinator and needs shared mutability.
+final class PermissionManager {
+    /// Tracks whether CGRequestScreenCaptureAccess() has ever been called.
+    /// CGPreflightScreenCaptureAccess() returns false for both "never asked" and "denied",
+    /// so we need this flag to distinguish the two states.
+    private var hasRequestedAccess: Bool = false
+
+    /// Check Screen Recording permission synchronously.
+    /// - `.granted`: CGPreflight returns true
+    /// - `.notDetermined`: CGPreflight returns false AND we haven't requested yet
+    /// - `.denied`: CGPreflight returns false AND we have already requested
     var screenRecordingStatus: PermissionStatus {
-        CGPreflightScreenCaptureAccess() ? .granted : .denied
+        if CGPreflightScreenCaptureAccess() {
+            return .granted
+        }
+        return hasRequestedAccess ? .denied : .notDetermined
     }
 
     /// Request Screen Recording permission. Shows the system prompt if not yet determined.
+    /// Returns true if permission is now granted.
     @discardableResult
     func requestScreenRecordingAccess() -> Bool {
-        CGRequestScreenCaptureAccess()
+        hasRequestedAccess = true
+        return CGRequestScreenCaptureAccess()
     }
 
     /// Open System Settings → Privacy & Security → Screen Recording.

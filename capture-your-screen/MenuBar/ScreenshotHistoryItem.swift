@@ -9,36 +9,37 @@ struct ScreenshotHistoryItem: Identifiable {
     let displayTime: String
 }
 
-enum HistoryGroup: String, CaseIterable, Hashable {
-    case today = "Today"
-    case yesterday = "Yesterday"
-    case earlier = "Earlier"
+struct ScreenshotDaySection: Identifiable {
+    let date: Date
+    let items: [ScreenshotHistoryItem]
 
-    var icon: String {
-        switch self {
-        case .today: return "calendar.circle.fill"
-        case .yesterday: return "calendar.circle"
-        case .earlier: return "calendar"
+    var id: Date { date }
+
+    var title: String {
+        Self.titleFormatter.string(from: date)
+    }
+
+    var subtitle: String {
+        if Calendar.current.isDateInToday(date) {
+            return "Today"
         }
+        if Calendar.current.isDateInYesterday(date) {
+            return "Yesterday"
+        }
+        return "\(items.count) shots"
     }
 
-    static func group(for date: Date) -> HistoryGroup {
-        let cal = Calendar.current
-        if cal.isDateInToday(date) { return .today }
-        if cal.isDateInYesterday(date) { return .yesterday }
-        return .earlier
-    }
+    private static let titleFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "EEE, MMM d"
+        return formatter
+    }()
 }
 
 extension ScreenshotRecord {
     func toHistoryItem() -> ScreenshotHistoryItem {
         let formatter = DateFormatter()
-        let group = HistoryGroup.group(for: date)
-        if group == .earlier {
-            formatter.dateFormat = "MMM d, HH:mm"
-        } else {
-            formatter.dateFormat = "HH:mm:ss"
-        }
+        formatter.dateFormat = "HH:mm:ss"
         return ScreenshotHistoryItem(
             id: id,
             url: url,

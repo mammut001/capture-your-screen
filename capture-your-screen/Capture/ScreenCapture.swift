@@ -18,14 +18,19 @@ enum ScreenCaptureError: Error, LocalizedError {
 }
 
 struct ScreenCapture {
-    /// Capture a region of the main display (rect in screen coordinates, bottom-left origin, logical points).
+    /// Capture a region of the specified display.
+    /// - Parameters:
+    ///   - rect: Selection rectangle in the target display's local coordinates (points).
+    ///   - displayID: The display to capture from. If nil, uses the primary display.
     /// Marked nonisolated to avoid deadlock when called from a main-actor context (local monitor / keyDown).
-    static nonisolated func captureRegion(_ rect: CGRect) async throws -> NSImage {
+    static nonisolated func captureRegion(_ rect: CGRect, displayID: CGDirectDisplayID? = nil) async throws -> NSImage {
         let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
 
-        // Find the display matching the main screen
-        let mainDisplayID = CGMainDisplayID()
-        guard let scDisplay = content.displays.first(where: { $0.displayID == mainDisplayID })
+        // Use the provided displayID, or fall back to the primary display
+        let targetDisplayID = displayID ?? CGMainDisplayID()
+
+        // Find the SCDisplay matching the target display
+        guard let scDisplay = content.displays.first(where: { $0.displayID == targetDisplayID })
                 ?? content.displays.first else {
             throw ScreenCaptureError.noDisplayFound
         }
@@ -43,9 +48,10 @@ struct ScreenCapture {
         )
 
         let config = SCStreamConfiguration()
-        config.sourceRect = rect
-        config.width = max(1, Int(rect.width * scaleFactor))
-        config.height = max(1, Int(rect.height * scaleFactor))
+    let captureRect = rect.integral
+    config.sourceRect = captureRect
+    config.width = max(1, Int(captureRect.width * scaleFactor))
+    config.height = max(1, Int(captureRect.height * scaleFactor))
         config.capturesAudio = false
         config.pixelFormat = kCVPixelFormatType_32BGRA
 
@@ -64,7 +70,7 @@ struct ScreenCapture {
             throw ScreenCaptureError.captureFailed
         }
 
-        return NSImage(cgImage: cgImage, size: rect.size)
+        return NSImage(cgImage: cgImage, size: captureRect.size)
     }
 }
 

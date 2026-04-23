@@ -37,30 +37,34 @@ final class ScreenshotStore: ObservableObject {
     /// Persist an NSImage to disk; returns the saved record.
     /// File I/O is performed on a background thread to avoid blocking the main actor.
     func save(_ image: NSImage) async throws -> ScreenshotRecord {
+        print("ScreenshotStore: Attempting to save image to resolver path...")
         try resolver.ensureFolderExists()
         let folderURL = resolver.screenshotFolderURL
 
         let now = Date()
         
-        // Create a sub-folder for today's date
         let folderFormatter = DateFormatter()
         folderFormatter.dateFormat = "yyyy-MM-dd"
         let dateFolderName = folderFormatter.string(from: now)
         let dateFolderURL = folderURL.appendingPathComponent(dateFolderName, isDirectory: true)
         
+        print("ScreenshotStore: Targeted folder: \(dateFolderURL.path)")
         try FileManager.default.createDirectory(at: dateFolderURL, withIntermediateDirectories: true)
         
         let filename = "Screenshot_\(dateFormatter.string(from: now)).png"
         let fileURL = dateFolderURL.appendingPathComponent(filename)
 
         guard let pngData = pngData(from: image) else {
+            print("ScreenshotStore: FAILED to encode image to PNG data.")
             throw ScreenshotStoreError.imageEncodingFailed
         }
 
-        // Write to disk on a background thread so the main actor is never blocked.
+        print("ScreenshotStore: Writing data to disk (\(pngData.count) bytes)...")
         try await Task.detached(priority: .userInitiated) {
             try pngData.write(to: fileURL, options: .atomic)
         }.value
+
+        print("ScreenshotStore: Successfully wrote \(filename)")
 
         let record = ScreenshotRecord(
             id: filename,
@@ -79,26 +83,29 @@ final class ScreenshotStore: ObservableObject {
         let folderURL = resolver.screenshotFolderURL
         let fm = FileManager.default
 
-        guard let contents = try? fm.contentsOfDirectory(
-            at: folderURL,
-            includingPropertiesForKeys: [.creationDateKey],
-            options: [.skipsHiddenFiles]
-        ) else { return }
+        // If the folder doesn't exist yet, just clear the list and bail.
+        guard fm.fileExists(atPath: folderURL.path) else {
+            screenshots = []
+            return
+        }
 
         // Parse records on a background thread
         let formatter = dateFormatter
         let records: [ScreenshotRecord] = await Task.detached(priority: .utility) {
             var foundURLs: [URL] = []
-            if let enumerator = fm.enumerator(at: folderURL, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]) {
-                for case let url as URL in enumerator {
-                    if url.pathExtension.lowercased() == "png" {
-                        foundURLs.append(url)
-                    }
+            let enumerator = fm.enumerator(
+                at: folderURL,
+                includingPropertiesForKeys: [.isRegularFileKey],
+                options: [.skipsHiddenFiles]
+            )
+            
+            while let url = enumerator?.nextObject() as? URL {
+                if url.pathExtension.lowercased() == "png" {
+                    foundURLs.append(url)
                 }
             }
             
             return foundURLs.compactMap { url in
-                guard url.pathExtension.lowercased() == "png" else { return nil }
                 let filename = url.lastPathComponent
                 let datePart = filename
                     .replacingOccurrences(of: "Screenshot_", with: "")
@@ -138,6 +145,12 @@ final class ScreenshotStore: ObservableObject {
         guard let record = screenshots.first(where: { $0.id == id }) else {
             throw ScreenshotStoreError.fileNotFound
         }
+        // Defense-in-depth: ensure the target file is inside the designated screenshots folder
+        // to prevent path traversal if a record URL were ever tampered with.
+        let folderURL = resolver.screenshotFolderURL.standardized
+        guard record.url.standardized.path.hasPrefix(folderURL.path + "/") else {
+            throw ScreenshotStoreError.fileNotFound
+        }
         try FileManager.default.removeItem(at: record.url)
         screenshots.removeAll { $0.id == id }
     }
@@ -158,12 +171,34 @@ final class ScreenshotStore: ObservableObject {
 
     /// Static version so it can be called from a detached Task (no actor isolation needed).
     nonisolated static func makeThumbnailStatic(from image: NSImage) -> NSImage {
-        let targetSize = NSSize(width: 60, height: 60)
-        let thumb = NSImage(size: targetSize, flipped: false) { rect in
-            image.draw(in: rect, from: .zero, operation: .copy, fraction: 1.0)
-            return true
-        }
+        let targetSize = NSSize(width: 420, height: 240)
+        let thumb = NSImage(size: targetSize)
+        thumb.lockFocus()
+        NSColor.clear.set()
+        NSRect(origin: .zero, size: targetSize).fill()
+        image.draw(
+            in: aspectFitRect(for: image.size, in: NSRect(origin: .zero, size: targetSize)),
+            from: .zero,
+            operation: .copy,
+            fraction: 1.0
+        )
+        thumb.unlockFocus()
         return thumb
+    }
+
+    nonisolated private static func aspectFitRect(for sourceSize: NSSize, in bounds: NSRect) -> NSRect {
+        guard sourceSize.width > 0, sourceSize.height > 0 else { return bounds }
+
+        let widthRatio = bounds.width / sourceSize.width
+        let heightRatio = bounds.height / sourceSize.height
+        let scale = min(widthRatio, heightRatio)
+
+        let drawSize = NSSize(width: sourceSize.width * scale, height: sourceSize.height * scale)
+        let origin = NSPoint(
+            x: bounds.midX - (drawSize.width / 2),
+            y: bounds.midY - (drawSize.height / 2)
+        )
+        return NSRect(origin: origin, size: drawSize)
     }
 }
 

@@ -2,6 +2,7 @@ import Combine
 import Foundation
 import AppKit
 import SwiftUI
+import UserNotifications
 
 /// State machine that drives the full capture flow:
 /// idle → capturing (overlay shown) → confirmed/cancelled → idle
@@ -10,6 +11,7 @@ final class CaptureCoordinator: ObservableObject {
     enum CaptureState {
         case idle
         case capturing
+        case annotating
         case confirmed
         case cancelled
     }
@@ -18,17 +20,21 @@ final class CaptureCoordinator: ObservableObject {
     @Published var lastError: Error?
 
     private var overlayWindow: OverlayWindow?
+    private var annotationWindow: AnnotationEditorWindow?
     private let screenshotStore: ScreenshotStore
+    private let hotkeyManager: HotkeyManager
     private let permissionManager = PermissionManager()
 
-    init(screenshotStore: ScreenshotStore) {
+    init(screenshotStore: ScreenshotStore, hotkeyManager: HotkeyManager) {
         self.screenshotStore = screenshotStore
+        self.hotkeyManager = hotkeyManager
     }
 
     // MARK: - Public API
 
     func startCapture() {
         guard case .idle = state else { return }
+        lastError = nil
 
         // If not yet granted, trigger the system permission dialog first.
         // This makes the app appear in System Settings → Screen Recording.
@@ -41,7 +47,7 @@ final class CaptureCoordinator: ObservableObject {
             }
         }
 
-        guard let screen = NSScreen.main else { return }
+        guard let screen = activeCaptureScreen() else { return }
 
         state = .capturing
 
@@ -52,7 +58,9 @@ final class CaptureCoordinator: ObservableObject {
             },
             onCancel: { [weak self] in
                 self?.cancelCapture()
-            }
+            },
+            screen: screen,
+            hotkeyConfig: hotkeyManager.currentConfig
         )
         let hostingView = KeyboardAcceptingHostingView(rootView: overlayView)
         hostingView.frame = window.contentRect(forFrameRect: window.frame)
@@ -83,43 +91,98 @@ final class CaptureCoordinator: ObservableObject {
         overlayWindow?.close()
         overlayWindow = nil
 
-        // Convert view coords (top-left origin) → screen coords (bottom-left origin)
-        let screenHeight = screen.frame.height
-        let captureRect = CGRect(
-            x: screen.frame.minX + selectionRect.minX,
-            y: screen.frame.minY + (screenHeight - selectionRect.maxY),
-            width: selectionRect.width,
-            height: selectionRect.height
-        )
+        // SelectionOverlayView emits coordinates in the overlay's local space.
+        // Once the display is fixed, ScreenCaptureKit expects the rect within that display.
+        let captureRect = selectionRect.integral
 
-        // performCapture uses Task {}, so it runs off the main thread automatically.
-        performCapture(rect: captureRect)
+        performCapture(rect: captureRect, screen: screen)
     }
 
-    private func performCapture(rect: CGRect) {
+    private func performCapture(rect: CGRect, screen: NSScreen) {
+        print("CaptureCoordinator: Starting capture for rect: \(rect) on screen: \(screen.frame)")
         Task {
             do {
-                let image = try await ScreenCapture.captureRegion(rect)
+                let image = try await ScreenCapture.captureRegion(rect, displayID: screen.displayID)
+                print("CaptureCoordinator: Image captured successfully.")
+                lastError = nil
+                openAnnotationEditor(with: image)
+            } catch {
+                print("CaptureCoordinator: ERROR during capture: \(error.localizedDescription)")
+                lastError = error
+                showNotification(title: "Capture Failed", body: error.localizedDescription)
+                state = .idle
+            }
+        }
+    }
 
-                // Copy to clipboard
+    // MARK: - Annotation flow
+
+    private func openAnnotationEditor(with image: NSImage) {
+        state = .annotating
+
+        let window = AnnotationEditorWindow(image: image)
+        let view = AnnotationEditorView(
+            baseImage: image,
+            onSave: { [weak self] annotated in
+                self?.finalize(image: annotated)
+            },
+            onSaveOriginal: { [weak self] in
+                self?.finalize(image: image)
+            },
+            onCancel: { [weak self] in
+                self?.cancelAnnotation()
+            }
+        )
+
+        let hosting = NSHostingView(rootView: view)
+        hosting.frame = window.contentRect(forFrameRect: window.frame)
+        hosting.autoresizingMask = [.width, .height]
+        window.contentView = hosting
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+
+        self.annotationWindow = window
+    }
+
+    private func finalize(image: NSImage) {
+        annotationWindow?.close()
+        annotationWindow = nil
+
+        Task {
+            do {
                 let pb = NSPasteboard.general
                 pb.clearContents()
                 pb.writeObjects([image])
 
-                // Save to disk
-                _ = try await screenshotStore.save(image)
-                showNotification()
+                let record = try await screenshotStore.save(image)
+                print("CaptureCoordinator: Saved as \(record.url.path)")
+                showNotification(title: "Screenshot Captured", body: "Saved to \(record.url.lastPathComponent)")
             } catch {
+                print("CaptureCoordinator: ERROR during save: \(error.localizedDescription)")
                 lastError = error
+                showNotification(title: "Save Failed", body: error.localizedDescription)
             }
             state = .idle
         }
     }
 
-    private func showNotification() {
+    private func cancelAnnotation() {
+        annotationWindow?.close()
+        annotationWindow = nil
+        state = .idle
+    }
+
+    private func activeCaptureScreen() -> NSScreen? {
+        let pointerLocation = NSEvent.mouseLocation
+        return NSScreen.screens.first(where: { NSMouseInRect(pointerLocation, $0.frame, false) })
+            ?? NSScreen.main
+            ?? NSScreen.screens.first
+    }
+
+    private func showNotification(title: String, body: String) {
         let content = UNMutableNotificationContent()
-        content.title = "Screenshot Captured"
-        content.body = "Saved and copied to clipboard."
+        content.title = title
+        content.body = body
         content.sound = .default
 
         let request = UNNotificationRequest(
@@ -127,9 +190,16 @@ final class CaptureCoordinator: ObservableObject {
             content: content,
             trigger: nil
         )
-        UNUserNotificationCenter.current().add(request)
+        UNUserNotificationCenter.current().add(request) { error in
+            if let error {
+                print("CaptureCoordinator: notification delivery failed: \(error.localizedDescription)")
+            }
+        }
     }
 }
 
-// Import UserNotifications for the notification helper above
-import UserNotifications
+private extension NSScreen {
+    var displayID: CGDirectDisplayID? {
+        deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID
+    }
+}
