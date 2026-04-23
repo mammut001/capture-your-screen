@@ -539,22 +539,16 @@ private struct CompactCalendarView: View {
                 }
 
                 ForEach(monthCells) { cell in
-                    Group {
-                        if let date = cell.date {
-                            Button(action: { selectedDate = date }) {
-                                Text("\(calendar.component(.day, from: date))")
-                                    .font(.system(size: 17, weight: isSelected(date) ? .bold : .medium))
-                                    .foregroundColor(textColor(for: date, isCurrentMonth: cell.isCurrentMonth))
-                                    .frame(width: 42, height: 42)
-                                    .background(selectionBackground(for: date))
-                            }
-                            .buttonStyle(.plain)
-                            .disabled(date > Date())
-                        } else {
-                            Color.clear
-                                .frame(width: 42, height: 42)
-                        }
+                    Button(action: { selectedDate = cell.date }) {
+                        Text("\(calendar.component(.day, from: cell.date))")
+                            .font(.system(size: 17, weight: isSelected(cell.date) ? .bold : .medium))
+                            .foregroundColor(textColor(for: cell.date, isCurrentMonth: cell.isCurrentMonth))
+                            .frame(width: 42, height: 42)
+                            .background(selectionBackground(for: cell.date))
                     }
+                    .buttonStyle(.plain)
+                    .disabled(cell.date > Date())
+                    .contentShape(Rectangle())
                     .frame(maxWidth: .infinity)
                 }
             }
@@ -671,15 +665,10 @@ private struct CompactCalendarView: View {
 }
 
 private struct CalendarCell: Identifiable {
-    let date: Date?
+    let date: Date
     let isCurrentMonth: Bool
 
-    var id: String {
-        if let date {
-            return String(date.timeIntervalSinceReferenceDate)
-        }
-        return UUID().uuidString
-    }
+    var id: TimeInterval { date.timeIntervalSinceReferenceDate }
 }
 
 private enum CalendarSwipeDirection {
@@ -690,47 +679,23 @@ private enum CalendarSwipeDirection {
 private struct TrackpadSwipeCatcher: NSViewRepresentable {
     let onSwipe: (CalendarSwipeDirection) -> Void
 
-    func makeCoordinator() -> Coordinator {
-        Coordinator(onSwipe: onSwipe)
-    }
-
     func makeNSView(context: Context) -> SwipeCaptureView {
         let view = SwipeCaptureView()
-        let recognizer = NSPanGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.handlePan(_:)))
-        recognizer.allowedTouchTypes = [.indirect]
-        recognizer.delaysPrimaryMouseButtonEvents = false
-        recognizer.delaysSecondaryMouseButtonEvents = false
-        view.addGestureRecognizer(recognizer)
+        view.onSwipe = onSwipe
         return view
     }
 
     func updateNSView(_ nsView: SwipeCaptureView, context: Context) {
-        context.coordinator.onSwipe = onSwipe
-    }
-
-    final class Coordinator: NSObject {
-        var onSwipe: (CalendarSwipeDirection) -> Void
-
-        init(onSwipe: @escaping (CalendarSwipeDirection) -> Void) {
-            self.onSwipe = onSwipe
-        }
-
-        @objc func handlePan(_ recognizer: NSPanGestureRecognizer) {
-            guard recognizer.state == .ended else { return }
-
-            let translation = recognizer.translation(in: recognizer.view)
-            guard abs(translation.x) > abs(translation.y), abs(translation.x) > 36 else { return }
-
-            if translation.x > 0 {
-                onSwipe(.previous)
-            } else {
-                onSwipe(.next)
-            }
-        }
+        nsView.onSwipe = onSwipe
     }
 }
 
 private final class SwipeCaptureView: NSView {
+    var onSwipe: ((CalendarSwipeDirection) -> Void)?
+    private var accumulatedHorizontalDelta: CGFloat = 0
+    private var didTriggerSwipeInCurrentGesture = false
+    private let swipeActivationThreshold: CGFloat = 90
+
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         wantsLayer = true
@@ -739,6 +704,50 @@ private final class SwipeCaptureView: NSView {
 
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        self
+    }
+
+    override func scrollWheel(with event: NSEvent) {
+        let deltaX = event.scrollingDeltaX
+        let deltaY = event.scrollingDeltaY
+
+        if event.phase == .began {
+            accumulatedHorizontalDelta = 0
+            didTriggerSwipeInCurrentGesture = false
+        }
+
+        guard abs(deltaX) > abs(deltaY), abs(deltaX) > 0 else {
+            super.scrollWheel(with: event)
+            return
+        }
+
+        guard !didTriggerSwipeInCurrentGesture else {
+            if event.phase == .ended || event.momentumPhase == .ended || event.phase == .cancelled {
+                accumulatedHorizontalDelta = 0
+                didTriggerSwipeInCurrentGesture = false
+            }
+            return
+        }
+
+        accumulatedHorizontalDelta += deltaX
+
+        if accumulatedHorizontalDelta >= swipeActivationThreshold {
+            accumulatedHorizontalDelta = 0
+            didTriggerSwipeInCurrentGesture = true
+            onSwipe?(.previous)
+        } else if accumulatedHorizontalDelta <= -swipeActivationThreshold {
+            accumulatedHorizontalDelta = 0
+            didTriggerSwipeInCurrentGesture = true
+            onSwipe?(.next)
+        }
+
+        if event.phase == .ended || event.momentumPhase == .ended || event.phase == .cancelled {
+            accumulatedHorizontalDelta = 0
+            didTriggerSwipeInCurrentGesture = false
+        }
     }
 }
 

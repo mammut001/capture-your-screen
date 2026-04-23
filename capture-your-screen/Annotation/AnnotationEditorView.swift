@@ -48,8 +48,6 @@ struct AnnotationEditorView: View {
     }
 
     private var actionBar: some View {
-        let primaryActionButtonSize = CGSize(width: 220, height: 36)
-
         HStack {
             Button(role: .cancel) {
                 cancel()
@@ -60,39 +58,60 @@ struct AnnotationEditorView: View {
 
             Spacer()
 
-            Button {
-                saveOriginal()
-            } label: {
-                HStack(spacing: 8) {
-                    Label("Skip Annotation", systemImage: "arrow.right")
-                    Text("Press Space to Skip")
-                        .font(.system(size: 11, weight: .semibold, design: .rounded))
-                        .foregroundStyle(.secondary)
+            HStack(spacing: 12) {
+                Button {
+                    saveOriginal()
+                } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: "arrow.right")
+                            .font(.system(size: 14, weight: .semibold))
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text("Skip Annotation")
+                                .font(.system(size: 14, weight: .semibold))
+                            Text("Press Space to Skip")
+                                .font(.system(size: 11, weight: .semibold, design: .rounded))
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer(minLength: 0)
+                    }
+                    .foregroundStyle(.primary)
+                    .padding(.horizontal, 16)
+                    .frame(height: 42)
+                    .background(
+                        Capsule()
+                            .fill(Color(NSColor.controlBackgroundColor))
+                    )
+                    .overlay(
+                        RainbowBorderView(cornerRadius: 21)
+                    )
                 }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
-                .background(
-                    RoundedRectangle(cornerRadius: 8)
-                        .fill(Color(NSColor.controlBackgroundColor))
-                )
-                .overlay(
-                    RainbowBorderView(cornerRadius: 8)
-                )
-                .frame(width: primaryActionButtonSize.width, height: primaryActionButtonSize.height)
-            }
-            .keyboardShortcut(.return, modifiers: [.command])
-            .buttonStyle(.plain)
-            .help("Save original without annotations (⌘↵ / Space)")
+                .keyboardShortcut(.return, modifiers: [.command])
+                .buttonStyle(.plain)
+                .frame(width: 240, height: 42)
+                .help("Save original without annotations (⌘↵ / Space)")
 
-            Button {
-                save()
-            } label: {
-                Label("Save", systemImage: "checkmark")
-                    .fontWeight(.semibold)
-                    .frame(width: primaryActionButtonSize.width, height: primaryActionButtonSize.height)
+                Button {
+                    save()
+                } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: "checkmark")
+                            .font(.system(size: 14, weight: .bold))
+                        Text("Save")
+                            .font(.system(size: 15, weight: .semibold))
+                        Spacer(minLength: 0)
+                    }
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 16)
+                        .frame(height: 42)
+                        .background(
+                            Capsule()
+                                .fill(Color.accentColor)
+                        )
+                }
+                .keyboardShortcut("s", modifiers: [.command])
+                .buttonStyle(.plain)
+                .frame(width: 240, height: 42)
             }
-            .keyboardShortcut("s", modifiers: [.command])
-            .buttonStyle(.borderedProminent)
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
@@ -152,6 +171,7 @@ private struct KeyboardShortcutHandler: NSViewRepresentable {
         var onSaveOriginal: (() -> Void)?
 
         private var monitor: Any?
+        private var isActionTriggered = false
 
         override var acceptsFirstResponder: Bool { true }
 
@@ -189,6 +209,13 @@ private struct KeyboardShortcutHandler: NSViewRepresentable {
         private func handleKeyEvent(_ event: NSEvent) -> Bool {
             guard let canvas = canvas else { return false }
 
+            // Once a terminal action is triggered (cancel/save/skip), ignore
+            // subsequent key-down events to avoid re-entrancy while the window
+            // is closing.
+            if isActionTriggered {
+                return true
+            }
+
             // Do not intercept while the user is editing text (first responder
             // will be a TextField / text-editing view). We detect that by
             // checking whether the current first responder is a text view.
@@ -202,7 +229,7 @@ private struct KeyboardShortcutHandler: NSViewRepresentable {
 
             // Escape → cancel
             if event.keyCode == 53 {
-                onCancel?()
+                triggerTerminalAction(onCancel)
                 return true
             }
 
@@ -231,7 +258,9 @@ private struct KeyboardShortcutHandler: NSViewRepresentable {
             if mods.isEmpty {
                 // Space → skip annotation and save original image.
                 if event.keyCode == 49 {
-                    onSaveOriginal?()
+                    // Ignore key repeat to prevent duplicate skip actions.
+                    if event.isARepeat { return true }
+                    triggerTerminalAction(onSaveOriginal)
                     return true
                 }
 
@@ -243,6 +272,17 @@ private struct KeyboardShortcutHandler: NSViewRepresentable {
             }
 
             return false
+        }
+
+        private func triggerTerminalAction(_ action: (() -> Void)?) {
+            guard !isActionTriggered else { return }
+            isActionTriggered = true
+
+            // Defer to next run loop tick to avoid executing close/save flows
+            // while still inside the NSEvent local monitor callback.
+            DispatchQueue.main.async {
+                action?()
+            }
         }
     }
 }
