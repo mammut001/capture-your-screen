@@ -48,10 +48,10 @@ struct ScreenCapture {
         )
 
         let config = SCStreamConfiguration()
-    let captureRect = rect.integral
-    config.sourceRect = captureRect
-    config.width = max(1, Int(captureRect.width * scaleFactor))
-    config.height = max(1, Int(captureRect.height * scaleFactor))
+        let captureRect = rect.integral
+        config.sourceRect = captureRect
+        config.width = max(1, Int(captureRect.width * scaleFactor))
+        config.height = max(1, Int(captureRect.height * scaleFactor))
         config.capturesAudio = false
         config.pixelFormat = kCVPixelFormatType_32BGRA
 
@@ -64,6 +64,8 @@ struct ScreenCapture {
             throw ScreenCaptureError.captureFailed
         }
 
+        // ScreenCaptureKit already gives us a correctly oriented pixel buffer.
+        // Applying an extra orientation transform here inverts the final image.
         let ciImage = CIImage(cvPixelBuffer: pixelBuffer)
         let ciContext = CIContext()
         guard let cgImage = ciContext.createCGImage(ciImage, from: ciImage.extent) else {

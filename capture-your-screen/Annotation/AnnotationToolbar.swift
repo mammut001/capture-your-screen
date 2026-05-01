@@ -46,7 +46,7 @@ struct AnnotationToolbar: View {
 
             Divider().frame(height: 22).padding(.horizontal, 4)
 
-            // Line width picker (hidden for text / step)
+            // Line width picker (hidden for text / step / blur / pixelate)
             if canvas.activeTool == .arrow || canvas.activeTool == .rectangle {
                 LineWidthPicker(
                     width: Binding(
@@ -57,6 +57,40 @@ struct AnnotationToolbar: View {
                                let item = canvas.item(with: id),
                                item.type == .arrow || item.type == .rectangle {
                                 canvas.updateItem(id) { $0.lineWidth = newValue }
+                            }
+                        }
+                    )
+                )
+            }
+
+            // Pixelate size picker
+            if canvas.activeTool == .pixelate {
+                PixelateSizePicker(
+                    pixelSize: Binding(
+                        get: { canvas.activePixelSize },
+                        set: { newValue in
+                            canvas.activePixelSize = newValue
+                            if let id = canvas.selectedItemID,
+                               let item = canvas.item(with: id),
+                               item.type == .pixelate {
+                                canvas.updateItem(id) { $0.pixelSize = newValue }
+                            }
+                        }
+                    )
+                )
+            }
+
+            // Blur radius picker
+            if canvas.activeTool == .blur {
+                BlurRadiusPicker(
+                    blurRadius: Binding(
+                        get: { canvas.activeBlurRadius },
+                        set: { newValue in
+                            canvas.activeBlurRadius = newValue
+                            if let id = canvas.selectedItemID,
+                               let item = canvas.item(with: id),
+                               item.type == .blur {
+                                canvas.updateItem(id) { $0.blurRadius = newValue }
                             }
                         }
                     )
@@ -299,6 +333,56 @@ private struct LineWidthPicker: View {
                         )
                 }
                 .buttonStyle(.borderless)
+            }
+        }
+    }
+}
+
+private struct PixelateSizePicker: View {
+    @Binding var pixelSize: CGFloat
+    private let options: [CGFloat] = [5, 10, 15, 20, 30]
+
+    var body: some View {
+        HStack(spacing: 4) {
+            ForEach(options, id: \.self) { size in
+                Button {
+                    pixelSize = size
+                } label: {
+                    Image(systemName: "square.grid.3x3")
+                        .font(.system(size: 12))
+                        .frame(width: 28, height: 28)
+                        .background(
+                            RoundedRectangle(cornerRadius: 6)
+                                .fill(pixelSize == size ? Color.accentColor.opacity(0.2) : Color.clear)
+                        )
+                }
+                .buttonStyle(.borderless)
+                .help("\(Int(size))px")
+            }
+        }
+    }
+}
+
+private struct BlurRadiusPicker: View {
+    @Binding var blurRadius: CGFloat
+    private let options: [CGFloat] = [5, 10, 15, 25, 40]
+
+    var body: some View {
+        HStack(spacing: 4) {
+            ForEach(options, id: \.self) { radius in
+                Button {
+                    blurRadius = radius
+                } label: {
+                    Image(systemName: "drop.fill")
+                        .font(.system(size: 12))
+                        .frame(width: 28, height: 28)
+                        .background(
+                            RoundedRectangle(cornerRadius: 6)
+                                .fill(blurRadius == radius ? Color.accentColor.opacity(0.2) : Color.clear)
+                        )
+                }
+                .buttonStyle(.borderless)
+                .help("\(Int(radius))px")
             }
         }
     }

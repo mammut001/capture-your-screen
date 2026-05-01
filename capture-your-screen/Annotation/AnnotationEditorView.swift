@@ -9,6 +9,7 @@ import AppKit
 struct AnnotationEditorView: View {
     let baseImage: NSImage
     @StateObject private var canvas: AnnotationCanvas
+    @State private var isSaving: Bool = false
 
     let onSave: (NSImage) -> Void       // Save composited image
     let onSaveOriginal: () -> Void      // Save the untouched base image (skip annotations)
@@ -45,6 +46,13 @@ struct AnnotationEditorView: View {
                                             onCancel: cancel,
                                             onSave: save,
                                             onSaveOriginal: saveOriginal))
+        .overlay {
+            if isSaving {
+                SavingToastView()
+                    .transition(.opacity)
+            }
+        }
+        .animation(.easeInOut(duration: 0.15), value: isSaving)
     }
 
     private var actionBar: some View {
@@ -68,7 +76,7 @@ struct AnnotationEditorView: View {
                         VStack(alignment: .leading, spacing: 1) {
                             Text("Skip Annotation")
                                 .font(.system(size: 14, weight: .semibold))
-                            Text("Press Space to Skip")
+                            Text("Save original to disk")
                                 .font(.system(size: 11, weight: .semibold, design: .rounded))
                                 .foregroundStyle(.secondary)
                         }
@@ -88,7 +96,7 @@ struct AnnotationEditorView: View {
                 .keyboardShortcut(.return, modifiers: [.command])
                 .buttonStyle(.plain)
                 .frame(width: 240, height: 42)
-                .help("Save original without annotations (⌘↵ / Space)")
+                .help("Save the original screenshot to disk without annotations (⌘↵ / Space)")
 
                 Button {
                     save()
@@ -120,23 +128,55 @@ struct AnnotationEditorView: View {
     // MARK: - Actions
 
     private func save() {
+        isSaving = true
         let items = canvas.items
         let image = baseImage
-        // Do the composite on a background queue, keep the call site clean.
+        // Composite off the main thread; the window is dismissed by onSave in CaptureCoordinator.
         DispatchQueue.global(qos: .userInitiated).async {
             let composed = AnnotationCompositor.composite(baseImage: image, annotations: items)
-            DispatchQueue.main.async {
-                onSave(composed)
+            Task { @MainActor in
+                self.onSave(composed)
             }
         }
     }
 
     private func saveOriginal() {
-        onSaveOriginal()
+        isSaving = true
+        // Brief defer so the toast renders for at least one frame before the window closes.
+        Task { @MainActor in
+            self.onSaveOriginal()
+        }
     }
 
     private func cancel() {
         onCancel()
+    }
+}
+
+// MARK: - In-editor save progress toast
+
+private struct SavingToastView: View {
+    var body: some View {
+        HStack(spacing: 10) {
+            ProgressView()
+                .controlSize(.small)
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Saving...")
+                    .font(.caption.bold())
+                Text("Writing screenshot to disk")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+            }
+            Spacer()
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .background(
+            RoundedRectangle(cornerRadius: 10)
+                .fill(Color(NSColor.windowBackgroundColor))
+                .shadow(radius: 6, y: 2)
+        )
+        .padding(.horizontal, 16)
     }
 }
 

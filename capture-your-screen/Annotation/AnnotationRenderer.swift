@@ -44,6 +44,13 @@ struct AnnotationOverlayView: View {
                 .frame(width: max(r.width, 1), height: max(r.height, 1))
                 .position(x: r.midX, y: r.midY)
 
+        case .ellipse:
+            let r = denormRect(item.normalizedRect)
+            Ellipse()
+                .stroke(item.color, lineWidth: item.lineWidth)
+                .frame(width: max(r.width, 1), height: max(r.height, 1))
+                .position(x: r.midX, y: r.midY)
+
         case .text:
             let p = denorm(item.startPoint)
             Text(item.textContent.isEmpty ? "Text" : item.textContent)
@@ -62,6 +69,46 @@ struct AnnotationOverlayView: View {
             let d = max(24, item.fontSize * 1.8)
             StepNumberBadge(number: item.stepNumber, color: item.color, diameter: d)
                 .position(x: p.x, y: p.y)
+
+        case .pixelate:
+            let r = denormRect(item.normalizedRect)
+            ZStack {
+                Rectangle()
+                    .fill(Color.gray.opacity(0.4))
+                    .overlay(
+                        Rectangle()
+                            .stroke(Color.gray.opacity(0.6), lineWidth: 1)
+                    )
+                HStack(spacing: 2) {
+                    Image(systemName: "square.grid.3x3")
+                        .font(.system(size: 10))
+                    Text("\(Int(item.pixelSize))")
+                        .font(.system(size: 9, weight: .bold))
+                }
+                .foregroundColor(.white)
+            }
+            .frame(width: max(r.width, 1), height: max(r.height, 1))
+            .position(x: r.midX, y: r.midY)
+
+        case .blur:
+            let r = denormRect(item.normalizedRect)
+            ZStack {
+                Rectangle()
+                    .fill(Color.blue.opacity(0.25))
+                    .overlay(
+                        Rectangle()
+                            .stroke(Color.blue.opacity(0.5), lineWidth: 1)
+                    )
+                HStack(spacing: 2) {
+                    Image(systemName: "drop.fill")
+                        .font(.system(size: 10))
+                    Text("\(Int(item.blurRadius))")
+                        .font(.system(size: 9, weight: .bold))
+                }
+                .foregroundColor(.white)
+            }
+            .frame(width: max(r.width, 1), height: max(r.height, 1))
+            .position(x: r.midX, y: r.midY)
         }
     }
 

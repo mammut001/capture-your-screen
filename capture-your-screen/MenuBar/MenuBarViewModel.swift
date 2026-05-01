@@ -68,6 +68,14 @@ final class MenuBarViewModel: ObservableObject {
         captureCoordinator.startCapture()
     }
 
+    var permissionStatus: PermissionStatus {
+        captureCoordinator.permissionStatus
+    }
+
+    func openPermissionSettings() {
+        captureCoordinator.permissionManager.openScreenRecordingSettings()
+    }
+
     func openScreenshotFolder() {
         let rootURL = screenshotStore.resolver.screenshotFolderURL
         

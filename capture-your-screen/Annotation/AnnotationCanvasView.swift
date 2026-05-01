@@ -268,6 +268,11 @@ struct AnnotationCanvasView: View {
             let inner = r.insetBy(dx: strokeBandNorm, dy: strokeBandNorm)
             return outer.contains(p) && !inner.contains(p)
 
+        case .ellipse:
+            // Ellipse hit testing: check if point is within normalized rect (simplified)
+            let r = item.normalizedRect
+            return r.contains(p)
+
         case .text:
             let center = denormalize(item.startPoint, in: displayRect)
             // Approximate bounding box based on text size.
@@ -289,6 +294,11 @@ struct AnnotationCanvasView: View {
             let dx = loc.x - center.x
             let dy = loc.y - center.y
             return (dx * dx + dy * dy) <= (diameter / 2) * (diameter / 2)
+
+        case .pixelate, .blur:
+            // 使用 normalizedRect 判断是否在区域内
+            let r = item.normalizedRect
+            return r.contains(p)
         }
     }
 

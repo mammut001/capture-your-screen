@@ -7,6 +7,7 @@ import CoreGraphics
 /// for the actively selected rectangle.
 struct SelectionOverlayView: View {
     let onConfirm: (CGRect) -> Void
+    let onQuickSave: (CGRect) -> Void
     let onCancel: () -> Void
     let screen: NSScreen
     let hotkeyConfig: HotkeyConfiguration
@@ -65,7 +66,21 @@ struct SelectionOverlayView: View {
                         // Defer to next run loop to avoid re-entrancy while inside event callback
                         DispatchQueue.main.async { onCancel() }
                         return nil
-                    } else if event.keyCode == 36 || event.keyCode == 76 { // Return / Enter
+                    }
+                    let mods = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+                    let isReturn = event.keyCode == 36
+                    // ⌘↩ (Cmd+Return) → Quick Save
+                    if isReturn, mods.contains(.command) {
+                        DispatchQueue.main.async {
+                            if let rect = self.selection,
+                               rect.width >= self.minSelectionSize,
+                               rect.height >= self.minSelectionSize {
+                                onQuickSave(rect)
+                            }
+                        }
+                        return nil
+                    }
+                    if isReturn || event.keyCode == 76 { // Return / Enter
                         // Confirm capture if a valid selection exists, otherwise cancel
                         DispatchQueue.main.async {
                             if let rect = self.selection,
@@ -137,7 +152,7 @@ struct SelectionOverlayView: View {
     }
 
     private var instructionLabel: some View {
-        Text("Click a window or drag to select — Esc to cancel, ↵ to capture")
+        Text("Click a window or drag to select — Esc cancel, ⌘↩ quick save, ↵ annotate")
             .font(.system(size: 13, weight: .medium))
             .foregroundColor(.white)
             .padding(.horizontal, 16)
@@ -214,7 +229,26 @@ struct SelectionOverlayView: View {
             }
             .buttonStyle(.plain)
 
-            // Checkmark button — confirm and capture
+            // Quick Save button — save immediately, bypass annotation editor
+            Button(action: {
+                if let rect = selection {
+                    DispatchQueue.main.async { onQuickSave(rect) }
+                }
+            }) {
+                HStack(spacing: 5) {
+                    Image(systemName: "bolt.fill")
+                        .font(.system(size: 11, weight: .bold))
+                    Text("Quick Save")
+                        .font(.system(size: 11, weight: .bold))
+                }
+                .foregroundColor(.white)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(Color.accentColor, in: Capsule())
+            }
+            .buttonStyle(.plain)
+
+            // Checkmark button — confirm and capture (with annotation)
             Button(action: {
                 if let rect = selection {
                     let captureRect = rect
@@ -379,11 +413,16 @@ struct SelectionOverlayView: View {
     }
 
     private var screenFrameInGlobalTopLeftCoordinates: CGRect {
-        let desktopMaxY = NSScreen.screens.map(\.frame.maxY).max() ?? screen.frame.maxY
+        // Use the primary screen's maxY as the global reference, not the max of ALL
+        // screens. CGWindowList coordinates are anchored to the primary display's
+        // bottom-left origin. Using the per-screen frame.minX/maxY ensures the
+        // coordinate transform correctly maps this screen's local origin to the
+        // global top-left coordinate system regardless of multi-monitor layout.
+        let primaryMaxY = NSScreen.screens.first?.frame.maxY ?? screen.frame.maxY
 
         return CGRect(
             x: screen.frame.minX,
-            y: desktopMaxY - screen.frame.maxY,
+            y: primaryMaxY - screen.frame.maxY,
             width: screen.frame.width,
             height: screen.frame.height
         )

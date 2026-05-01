@@ -18,12 +18,14 @@ final class CaptureCoordinator: ObservableObject {
 
     @Published private(set) var state: CaptureState = .idle
     @Published var lastError: Error?
+    /// Exposed so MenuBarViewModel can observe permission state.
+    var permissionStatus: PermissionStatus { permissionManager.screenRecordingStatus }
 
     private var overlayWindow: OverlayWindow?
     private var annotationWindow: AnnotationEditorWindow?
     private let screenshotStore: ScreenshotStore
     private let hotkeyManager: HotkeyManager
-    private let permissionManager = PermissionManager()
+    let permissionManager = PermissionManager()
 
     init(screenshotStore: ScreenshotStore, hotkeyManager: HotkeyManager) {
         self.screenshotStore = screenshotStore
@@ -55,6 +57,9 @@ final class CaptureCoordinator: ObservableObject {
         let overlayView = SelectionOverlayView(
             onConfirm: { [weak self] rect in
                 self?.finishCapture(selectionRect: rect, screen: screen)
+            },
+            onQuickSave: { [weak self] rect in
+                self?.quickSaveCapture(selectionRect: rect, screen: screen)
             },
             onCancel: { [weak self] in
                 self?.cancelCapture()
@@ -112,6 +117,36 @@ final class CaptureCoordinator: ObservableObject {
                 showNotification(title: "Capture Failed", body: error.localizedDescription)
                 state = .idle
             }
+        }
+    }
+
+    /// Bypass the annotation editor and save directly to disk.
+    private func quickSaveCapture(selectionRect: CGRect, screen: NSScreen) {
+        guard case .capturing = state else { return }
+        state = .confirmed
+        overlayWindow?.close()
+        overlayWindow = nil
+
+        Task {
+            do {
+                let image = try await ScreenCapture.captureRegion(selectionRect.integral, displayID: screen.displayID)
+                lastError = nil
+
+                // Write to clipboard
+                let pb = NSPasteboard.general
+                pb.clearContents()
+                pb.writeObjects([image])
+
+                // Save to disk
+                let record = try await screenshotStore.save(image)
+                print("CaptureCoordinator: Quick-saved as \(record.url.path)")
+                showNotification(title: "Screenshot Captured", body: "Saved to \(record.url.lastPathComponent)")
+            } catch {
+                print("CaptureCoordinator: ERROR during quick save: \(error.localizedDescription)")
+                lastError = error
+                showNotification(title: "Save Failed", body: error.localizedDescription)
+            }
+            state = .idle
         }
     }
 

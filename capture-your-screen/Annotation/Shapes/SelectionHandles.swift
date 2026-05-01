@@ -29,9 +29,18 @@ struct SelectionHandlesView: View {
                 let r = item.normalizedRect
                 handle(at: denorm(CGPoint(x: r.minX, y: r.minY)), kind: .start)
                 handle(at: denorm(CGPoint(x: r.maxX, y: r.maxY)), kind: .end)
+            case .ellipse:
+                let r = item.normalizedRect
+                handle(at: denorm(CGPoint(x: r.minX, y: r.minY)), kind: .start)
+                handle(at: denorm(CGPoint(x: r.maxX, y: r.maxY)), kind: .end)
             case .text, .stepNumber:
                 // single anchor handle shown at startPoint
                 handle(at: denorm(item.startPoint), kind: .start)
+            case .pixelate, .blur:
+                // These are rect-like; show diagonal handles like rectangle.
+                let r = item.normalizedRect
+                handle(at: denorm(CGPoint(x: r.minX, y: r.minY)), kind: .start)
+                handle(at: denorm(CGPoint(x: r.maxX, y: r.maxY)), kind: .end)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)

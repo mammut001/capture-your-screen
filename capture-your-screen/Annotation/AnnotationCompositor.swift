@@ -9,6 +9,8 @@
 //
 
 import AppKit
+import CoreImage
+import CoreImage.CIFilterBuiltins
 
 enum AnnotationCompositor {
 
@@ -108,6 +110,13 @@ enum AnnotationCompositor {
             color.withAlphaComponent(item.opacity).setStroke()
             path.stroke()
 
+        case .ellipse:
+            let r = denormRect(item.normalizedRect, size: canvasSize)
+            let path = NSBezierPath(ovalIn: r)
+            path.lineWidth = lineWidth
+            color.withAlphaComponent(item.opacity).setStroke()
+            path.stroke()
+
         case .text:
             drawText(
                 item.textContent.isEmpty ? " " : item.textContent,
@@ -123,7 +132,125 @@ enum AnnotationCompositor {
                 fontSize: item.fontSize * max(scale, 1),
                 color: color.withAlphaComponent(item.opacity)
             )
+
+        case .pixelate:
+            let r = denormRect(item.normalizedRect, size: canvasSize)
+            applyPixelate(to: item, rect: r, canvasSize: canvasSize)
+
+        case .blur:
+            let r = denormRect(item.normalizedRect, size: canvasSize)
+            applyBlur(to: item, rect: r, canvasSize: canvasSize)
         }
+    }
+
+    // MARK: - Blur & Pixelate (CoreImage)
+
+    private static func applyPixelate(to item: AnnotationItem, rect: NSRect, canvasSize: NSSize) {
+        // 获取当前 CGContext
+        guard let ctx = NSGraphicsContext.current else { return }
+        let cgCtx = ctx.cgContext
+
+        // 从当前上下文中提取 CGImage（通过创建 bitmap）
+        guard let cgImage = cgCtx.makeImage() else { return }
+        let ciImage = CIImage(cgImage: cgImage)
+
+        // CIImage 使用左上角原点，rect 是 AppKit 左下角原点，需要转换
+        let ciRect = CGRect(
+            x: rect.origin.x,
+            y: canvasSize.height - rect.origin.y - rect.height,
+            width: rect.width,
+            height: rect.height
+        )
+
+        // 1. 先裁剪出目标区域
+        let cropped = ciImage.cropped(to: ciRect)
+
+        // 2. 对裁剪后的区域应用像素化滤镜
+        let filter = CIFilter.pixellate()
+        filter.inputImage = cropped
+        filter.scale = Float(item.pixelSize * max(canvasSize.width / 1000.0, 1))
+        filter.center = CGPoint(x: ciRect.midX, y: ciRect.midY)
+
+        guard let pixelated = filter.outputImage else { return }
+
+        // 3. 将像素化区域定位回原始坐标
+        let positionedPixelated = pixelated.transformed(by: CGAffineTransform(translationX: ciRect.origin.x, y: ciRect.origin.y))
+
+        // 4. 用 CIContext 渲染到 CGImage，然后绘制到当前 context
+        let ciCtx = CIContext()
+        guard let resultCGImage = ciCtx.createCGImage(positionedPixelated, from: positionedPixelated.extent) else { return }
+
+        // 绘制回当前 context（AppKit 坐标，需要翻转 Y）
+        let flippedRect = NSRect(
+            x: rect.origin.x,
+            y: canvasSize.height - rect.maxY,
+            width: rect.width,
+            height: rect.height
+        )
+
+        NSImage(cgImage: resultCGImage, size: rect.size).draw(
+            in: flippedRect,
+            from: .zero,
+            operation: .sourceOver,
+            fraction: 1.0
+        )
+    }
+
+    private static func applyBlur(to item: AnnotationItem, rect: NSRect, canvasSize: NSSize) {
+        guard let ctx = NSGraphicsContext.current else { return }
+        let cgCtx = ctx.cgContext
+
+        guard let cgImage = cgCtx.makeImage() else { return }
+        let ciImage = CIImage(cgImage: cgImage)
+
+        let radius = item.blurRadius * max(canvasSize.width / 1000.0, 1)
+
+        // CIImage 使用左上角原点，rect 是 AppKit 左下角原点，需要转换
+        let ciRect = CGRect(
+            x: rect.origin.x,
+            y: canvasSize.height - rect.origin.y - rect.height,
+            width: rect.width,
+            height: rect.height
+        )
+
+        // 1. 扩大裁剪区域（预留模糊半径，防止边缘被裁剪）
+        let expandedRect = ciRect.insetBy(dx: -radius, dy: -radius)
+        let cropped = ciImage.cropped(to: expandedRect)
+
+        // 2. 应用高斯模糊
+        let blurFilter = CIFilter.gaussianBlur()
+        blurFilter.inputImage = cropped
+        blurFilter.radius = Float(radius)
+
+        guard let blurred = blurFilter.outputImage else { return }
+
+        // 3. 模糊后裁剪回目标区域（避免晕染超出）
+        let finalBlurred = blurred.cropped(to: CGRect(
+            x: radius,
+            y: radius,
+            width: ciRect.width,
+            height: ciRect.height
+        ))
+
+        // 4. 定位到原始坐标
+        let positionedBlurred = finalBlurred.transformed(by: CGAffineTransform(translationX: ciRect.origin.x, y: ciRect.origin.y))
+
+        // 5. 渲染并绘制回当前 context
+        let ciCtx = CIContext()
+        guard let resultCGImage = ciCtx.createCGImage(positionedBlurred, from: positionedBlurred.extent) else { return }
+
+        let flippedRect = NSRect(
+            x: rect.origin.x,
+            y: canvasSize.height - rect.maxY,
+            width: rect.width,
+            height: rect.height
+        )
+        NSImage(cgImage: resultCGImage, size: rect.size).draw(
+            in: flippedRect,
+            from: .zero,
+            operation: .sourceOver,
+            fraction: 1.0
+        )
     }
 
     private static func drawArrow(from start: NSPoint, to end: NSPoint, lineWidth: CGFloat, color: NSColor) {

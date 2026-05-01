@@ -19,7 +19,10 @@ enum AnnotationType: String, CaseIterable, Codable, Identifiable {
     case arrow
     case text
     case rectangle
+    case ellipse
     case stepNumber
+    case pixelate
+    case blur
 
     var id: String { rawValue }
 
@@ -28,27 +31,34 @@ enum AnnotationType: String, CaseIterable, Codable, Identifiable {
         case .arrow:      return "Arrow"
         case .text:       return "Text"
         case .rectangle:  return "Rectangle"
+        case .ellipse:    return "Ellipse"
         case .stepNumber: return "Step"
+        case .pixelate:   return "Pixelate"
+        case .blur:       return "Blur"
         }
     }
 
-    /// SF Symbol name used in the toolbar.
     var symbolName: String {
         switch self {
         case .arrow:      return "arrow.up.right"
         case .text:       return "character.textbox"
         case .rectangle:  return "rectangle"
+        case .ellipse:    return "circle"
         case .stepNumber: return "1.circle.fill"
+        case .pixelate:   return "square.grid.3x3"
+        case .blur:       return "drop.fill"
         }
     }
 
-    /// Keyboard shortcut character for tool switching.
     var shortcutKey: Character {
         switch self {
         case .arrow:      return "a"
         case .text:       return "t"
-        case .rectangle: return "r"
+        case .rectangle:  return "r"
+        case .ellipse:    return "o"
         case .stepNumber: return "n"
+        case .pixelate:   return "p"
+        case .blur:       return "b"
         }
     }
 }
@@ -74,6 +84,12 @@ struct AnnotationItem: Identifiable, Equatable {
 
     // Step-specific
     var stepNumber: Int = 1
+
+    // Pixelate-specific
+    var pixelSize: CGFloat = 10.0
+
+    // Blur-specific
+    var blurRadius: CGFloat = 15.0
 
     init(id: AnnotationID = UUID(), type: AnnotationType) {
         self.id = id
@@ -103,6 +119,8 @@ final class AnnotationCanvas: ObservableObject {
     @Published var activeColorHex: String = "#FF3B30"
     @Published var activeLineWidth: CGFloat = 3.0
     @Published var activeFontSize: CGFloat = 18.0
+    @Published var activePixelSize: CGFloat = 10.0
+    @Published var activeBlurRadius: CGFloat = 15.0
 
     // MARK: - Undo / Redo
 

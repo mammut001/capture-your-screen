@@ -76,9 +76,53 @@ final class ScreenshotStore: ObservableObject {
         return record
     }
 
+    private var thumbnailTasks: [String: Task<Void, Never>] = [:]
+    private let thumbnailLock = NSLock()
+
+    // MARK: - Lazy Thumbnail Loading
+
+    /// Load thumbnail for a screenshot record on demand; updates the published screenshots array.
+    /// Thread-safe: concurrent calls for the same `id` are deduplicated.
+    func loadThumbnail(for id: String) {
+        // Fast path: already loaded
+        if screenshots.first(where: { $0.id == id })?.thumbnail != nil {
+            return
+        }
+
+        thumbnailLock.lock()
+        // Deduplicate: don't spawn a second task if one's already in flight for this id
+        if thumbnailTasks[id] != nil {
+            thumbnailLock.unlock()
+            return
+        }
+        let task = Task.detached(priority: .utility) { [weak self] in
+            guard let self = self else { return }
+            let record = await self.screenshots.first { $0.id == id }
+            guard let record, record.thumbnail == nil else { return }
+            guard let image = NSImage(contentsOf: record.url) else { return }
+            let thumb = await MainActor.run {
+                ScreenshotStore.makeThumbnailStatic(from: image)
+            }
+            await MainActor.run {
+                self.thumbnailLock.lock()
+                self.thumbnailTasks.removeValue(forKey: id)
+                self.thumbnailLock.unlock()
+                if let idx = self.screenshots.firstIndex(where: { $0.id == id }) {
+                    var updated = self.screenshots
+                    updated[idx].thumbnail = thumb
+                    self.screenshots = updated
+                }
+            }
+        }
+        thumbnailTasks[id] = task
+        thumbnailLock.unlock()
+    }
+
     // MARK: - History
 
-    /// Scan the screenshot folder and rebuild the history list.
+    /// Rebuild screenshot history. Disk I/O runs in background; thumbnail rendering is
+    /// dispatched to the main thread via `MainActor.run` because `lockFocus` requires it.
+    /// Thumbnails are NOT pre-loaded — call `loadThumbnail(for:)` on demand instead.
     func refreshHistory() async {
         let folderURL = resolver.screenshotFolderURL
         let fm = FileManager.default
@@ -89,7 +133,7 @@ final class ScreenshotStore: ObservableObject {
             return
         }
 
-        // Parse records on a background thread
+        // Parse records on a background thread — no thumbnail loading here
         let formatter = dateFormatter
         let records: [ScreenshotRecord] = await Task.detached(priority: .utility) {
             var foundURLs: [URL] = []
@@ -98,13 +142,13 @@ final class ScreenshotStore: ObservableObject {
                 includingPropertiesForKeys: [.isRegularFileKey],
                 options: [.skipsHiddenFiles]
             )
-            
+
             while let url = enumerator?.nextObject() as? URL {
                 if url.pathExtension.lowercased() == "png" {
                     foundURLs.append(url)
                 }
             }
-            
+
             return foundURLs.compactMap { url in
                 let filename = url.lastPathComponent
                 let datePart = filename
@@ -116,17 +160,7 @@ final class ScreenshotStore: ObservableObject {
             .sorted { $0.date > $1.date }
         }.value
 
-        // Load thumbnails on a background thread (reading many files off main)
-        var recordsWithThumbs = records
-        await Task.detached(priority: .utility) {
-            for i in recordsWithThumbs.indices {
-                if let image = NSImage(contentsOf: recordsWithThumbs[i].url) {
-                    recordsWithThumbs[i].thumbnail = ScreenshotStore.makeThumbnailStatic(from: image)
-                }
-            }
-        }.value
-
-        screenshots = recordsWithThumbs
+        screenshots = records
     }
 
     // MARK: - Actions

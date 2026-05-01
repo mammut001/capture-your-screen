@@ -66,7 +66,7 @@ struct MenuBarView: View {
                 Button(action: toggleDatePicker) {
                     HStack(spacing: 6) {
                         Image(systemName: viewModel.browsingByDate
-                              ? "calendar.badge.checkmark"
+                              ? "arrow.uturn.backward.circle"
                               : (showingDatePicker ? "calendar.badge.minus" : "calendar"))
                         Text(dateButtonTitle)
                     }
@@ -80,7 +80,7 @@ struct MenuBarView: View {
                     )
                 }
                 .buttonStyle(.plain)
-                .help(viewModel.browsingByDate ? "Clear date filter" : "Browse by date")
+                .help(viewModel.browsingByDate ? "Back to all screenshots" : "Browse by date")
             }
 
             Button(action: {
@@ -124,7 +124,12 @@ struct MenuBarView: View {
             }
             .buttonStyle(.plain)
 
-            if showingDatePicker || viewModel.browsingByDate {
+            if viewModel.permissionStatus == .denied {
+                permissionWarningBanner
+                    .transition(.move(edge: .top).combined(with: .opacity))
+            }
+
+            if showingDatePicker {
                 datePickerCard
                     .transition(
                         .asymmetric(
@@ -198,6 +203,37 @@ struct MenuBarView: View {
             .padding(.horizontal, 14)
             .padding(.vertical, 9)
             .background(panelCardBackground)
+    }
+
+    private var permissionWarningBanner: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "exclamationmark.shield.fill")
+                .font(.system(size: 14))
+                .foregroundColor(.orange)
+
+            Text("Screen Recording permission is required to capture your screen.")
+                .font(.caption)
+                .foregroundColor(.primary)
+
+            Spacer()
+
+            Button(action: { viewModel.openPermissionSettings() }) {
+                Text("Fix Permission")
+                    .font(.caption.bold())
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.small)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .background(
+            RoundedRectangle(cornerRadius: 12)
+                .fill(Color.orange.opacity(0.10))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12)
+                        .stroke(Color.orange.opacity(0.30), lineWidth: 1)
+                )
+        )
     }
 
     private func historyScroll(items: [ScreenshotHistoryItem]) -> some View {
@@ -379,7 +415,7 @@ struct MenuBarView: View {
 
     private var dateButtonTitle: String {
         if viewModel.browsingByDate {
-            return "Filtered"
+            return "Back to All"
         }
         return showingDatePicker ? "Hide Date" : "Pick Date"
     }
@@ -489,8 +525,7 @@ struct MenuBarView: View {
         if viewModel.browsingByDate {
             withAnimation(.easeInOut(duration: 0.2)) {
                 viewModel.clearDateFilter()
-                showingDatePicker = true
-                pendingDate = viewModel.selectedDate
+                showingDatePicker = false
             }
         } else {
             pendingDate = viewModel.selectedDate
