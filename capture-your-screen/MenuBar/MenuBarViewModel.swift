@@ -62,6 +62,14 @@ final class MenuBarViewModel: ObservableObject {
         rebuildSections()
     }
 
+    // MARK: - Thumbnail Loading
+
+    /// Trigger lazy thumbnail loading for a history item.
+    /// Called by the UI when a card enters the visible area.
+    func loadThumbnailIfNeeded(for item: ScreenshotHistoryItem) {
+        screenshotStore.loadThumbnail(for: item.id)
+    }
+
     // MARK: - Actions
 
     func startCapture() {

@@ -394,6 +394,9 @@ struct MenuBarView: View {
             Divider()
             Button("Delete", role: .destructive) { viewModel.deleteScreenshot(item) }
         }
+        .onAppear {
+            viewModel.loadThumbnailIfNeeded(for: item)
+        }
     }
 
     private var historyIsEmpty: Bool {

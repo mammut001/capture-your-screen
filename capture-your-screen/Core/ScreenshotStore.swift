@@ -83,6 +83,7 @@ final class ScreenshotStore: ObservableObject {
 
     /// Load thumbnail for a screenshot record on demand; updates the published screenshots array.
     /// Thread-safe: concurrent calls for the same `id` are deduplicated.
+    /// All exit paths (success / failure / cancellation / record-not-found) clean up thumbnailTasks.
     func loadThumbnail(for id: String) {
         // Fast path: already loaded
         if screenshots.first(where: { $0.id == id })?.thumbnail != nil {
@@ -90,31 +91,59 @@ final class ScreenshotStore: ObservableObject {
         }
 
         thumbnailLock.lock()
-        // Deduplicate: don't spawn a second task if one's already in flight for this id
         if thumbnailTasks[id] != nil {
             thumbnailLock.unlock()
             return
         }
-        let task = Task.detached(priority: .utility) { [weak self] in
+
+        // Capture the URL now while we hold the lock; avoid capturing self into the detached task.
+        let record = screenshots.first { $0.id == id }
+        guard let fileURL = record?.url else {
+            thumbnailLock.unlock()
+            print("ScreenshotStore: no record found for thumbnail id \(id)")
+            return
+        }
+
+        let task = Task(priority: .utility) { [weak self] in
             guard let self = self else { return }
-            let record = await self.screenshots.first { $0.id == id }
-            guard let record, record.thumbnail == nil else { return }
-            guard let image = NSImage(contentsOf: record.url) else { return }
+
+            // Load image on background thread
+            guard let image = NSImage(contentsOf: fileURL) else {
+                print("ScreenshotStore: failed to load thumbnail source at \(fileURL.path)")
+                await MainActor.run {
+                    self.clearThumbnailTask(for: id)
+                }
+                return
+            }
+
+            // Generate thumbnail on main actor (lockFocus requires main thread)
             let thumb = await MainActor.run {
                 ScreenshotStore.makeThumbnailStatic(from: image)
             }
+
+            // Update published property on main actor
             await MainActor.run {
-                self.thumbnailLock.lock()
-                self.thumbnailTasks.removeValue(forKey: id)
-                self.thumbnailLock.unlock()
+                guard let self = self else { return }
+                self.clearThumbnailTask(for: id)
                 if let idx = self.screenshots.firstIndex(where: { $0.id == id }) {
                     var updated = self.screenshots
                     updated[idx].thumbnail = thumb
                     self.screenshots = updated
+                } else {
+                    // Record was deleted or history was refreshed while we were loading
+                    print("ScreenshotStore: record \(id) disappeared before thumbnail update")
                 }
             }
         }
+
         thumbnailTasks[id] = task
+        thumbnailLock.unlock()
+    }
+
+    /// Removes a thumbnail task entry. Call while holding thumbnailLock or on MainActor.
+    private func clearThumbnailTask(for id: String) {
+        thumbnailLock.lock()
+        thumbnailTasks.removeValue(forKey: id)
         thumbnailLock.unlock()
     }
 
@@ -180,11 +209,16 @@ final class ScreenshotStore: ObservableObject {
             throw ScreenshotStoreError.fileNotFound
         }
         // Defense-in-depth: ensure the target file is inside the designated screenshots folder
-        // to prevent path traversal if a record URL were ever tampered with.
         let folderURL = resolver.screenshotFolderURL.standardized
         guard record.url.standardized.path.hasPrefix(folderURL.path + "/") else {
             throw ScreenshotStoreError.fileNotFound
         }
+        // Cancel any in-flight thumbnail task for this id to avoid a stale callback
+        thumbnailLock.lock()
+        thumbnailTasks[id]?.cancel()
+        thumbnailTasks.removeValue(forKey: id)
+        thumbnailLock.unlock()
+
         try FileManager.default.removeItem(at: record.url)
         screenshots.removeAll { $0.id == id }
     }
