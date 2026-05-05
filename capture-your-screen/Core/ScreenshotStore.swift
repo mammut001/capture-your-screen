@@ -90,11 +90,20 @@ final class ScreenshotStore: ObservableObject {
     }
 
     private var thumbnailTasks: [String: Task<Void, Never>] = [:]
+    private var thumbnailCache: [String: NSImage] = [:]
+
+    // MARK: - Cache Key
+
+    private func thumbnailCacheKey(for url: URL) -> String {
+        url.standardizedFileURL.path
+    }
 
     // MARK: - Lazy Thumbnail Loading
 
     /// Load a thumbnail on demand. Calls are deduplicated per id, and all exit paths
     /// remove the corresponding task so future appearances can retry after a failure.
+    /// Thumbnails are cached by file path — closing and reopening the menu preserves
+    /// already-loaded thumbnails without re-reading the disk.
     func loadThumbnail(for id: String) {
         guard let record = screenshots.first(where: { $0.id == id }) else {
             print("ScreenshotStore: no record found for thumbnail id \(id)")
@@ -107,38 +116,53 @@ final class ScreenshotStore: ObservableObject {
             return
         }
 
+        // 1. Check the in-memory cache first
+        let key = thumbnailCacheKey(for: record.url)
+        if let cached = thumbnailCache[key] {
+            var updated = screenshots
+            if let index = updated.firstIndex(where: { $0.id == id }) {
+                updated[index].thumbnail = cached
+                screenshots = updated
+            }
+            return
+        }
+
+        // 2. Not cached — kick off background load
         let fileURL = record.url
-        let task = Task(priority: .utility) { [weak self, fileURL] in
+        let task = Task(priority: .utility) { [weak self, fileURL, key] in
             let image = await Self.loadImageFromDisk(at: fileURL)
 
             guard !Task.isCancelled else {
-                self?.finishThumbnailLoad(for: id)
+                await self?.finishThumbnailLoad(for: id, cacheKey: key)
                 return
             }
 
             guard let image else {
                 print("ScreenshotStore: failed to load thumbnail source at \(fileURL.path)")
-                self?.finishThumbnailLoad(for: id)
+                await self?.finishThumbnailLoad(for: id, cacheKey: key)
                 return
             }
 
             let thumbnail = Self.makeThumbnailStatic(from: image)
 
             guard !Task.isCancelled else {
-                self?.finishThumbnailLoad(for: id)
+                await self?.finishThumbnailLoad(for: id, cacheKey: key)
                 return
             }
 
-            self?.finishThumbnailLoad(for: id, thumbnail: thumbnail)
+            await self?.finishThumbnailLoad(for: id, cacheKey: key, thumbnail: thumbnail)
         }
 
         thumbnailTasks[id] = task
     }
 
-    private func finishThumbnailLoad(for id: String, thumbnail: NSImage? = nil) {
+    private func finishThumbnailLoad(for id: String, cacheKey: String, thumbnail: NSImage? = nil) {
         thumbnailTasks.removeValue(forKey: id)
 
         guard let thumbnail else { return }
+
+        // Write to cache so re-opening the menu restores from cache, not disk
+        thumbnailCache[cacheKey] = thumbnail
 
         guard let index = screenshots.firstIndex(where: { $0.id == id }) else {
             print("ScreenshotStore: record \(id) disappeared before thumbnail update")
@@ -146,9 +170,7 @@ final class ScreenshotStore: ObservableObject {
         }
         guard screenshots[index].thumbnail == nil else { return }
 
-        var updated = screenshots
-        updated[index].thumbnail = thumbnail
-        screenshots = updated
+        screenshots[index].thumbnail = thumbnail
     }
 
     private func cancelThumbnailTask(for id: String) {
@@ -167,17 +189,19 @@ final class ScreenshotStore: ObservableObject {
 
     /// Rebuild screenshot history. Disk I/O runs in background; thumbnail rendering is
     /// dispatched to the main thread via `MainActor.run` because `lockFocus` requires it.
-    /// Thumbnails are NOT pre-loaded — call `loadThumbnail(for:)` on demand instead.
+    /// Thumbnails are restored from the in-memory thumbnailCache so previously-loaded
+    /// thumbnails survive a menu close/open cycle without re-reading the disk.
     func refreshHistory() async {
         scheduledRefreshTask?.cancel()
         scheduledRefreshTask = nil
 
-        let preservedThumbnails = Dictionary(
-            uniqueKeysWithValues: screenshots.compactMap { record -> (String, NSImage)? in
-                guard let thumbnail = record.thumbnail else { return nil }
-                return (record.url.standardizedFileURL.path, thumbnail)
+        // 1. Populate cache from any thumbnails already in memory before we wipe the list
+        for record in screenshots {
+            let key = thumbnailCacheKey(for: record.url)
+            if record.thumbnail != nil {
+                thumbnailCache[key] = record.thumbnail
             }
-        )
+        }
 
         cancelAllThumbnailTasks()
 
@@ -193,7 +217,7 @@ final class ScreenshotStore: ObservableObject {
             return
         }
 
-        // Parse records on a background thread — no thumbnail loading here
+        // 2. Parse records on a background thread — no thumbnail loading here
         let formatter = dateFormatter
         let records: [ScreenshotRecord] = await Task.detached(priority: .utility) {
             var foundURLs: [URL] = []
@@ -220,11 +244,17 @@ final class ScreenshotStore: ObservableObject {
             .sorted { $0.date > $1.date }
         }.value
 
+        // 3. Restore thumbnails from cache
         let restoredRecords = records.map { record in
             var updatedRecord = record
-            updatedRecord.thumbnail = preservedThumbnails[record.url.standardizedFileURL.path]
+            let key = thumbnailCacheKey(for: record.url)
+            updatedRecord.thumbnail = thumbnailCache[key]
             return updatedRecord
         }
+
+        // 4. Prune cache — remove keys that no longer have a corresponding file on disk
+        let activeKeys = Set(records.map { thumbnailCacheKey(for: $0.url) })
+        thumbnailCache = thumbnailCache.filter { activeKeys.contains($0.key) }
 
         screenshots = restoredRecords
         hasLoadedHistory = true
@@ -299,6 +329,8 @@ final class ScreenshotStore: ObservableObject {
             throw ScreenshotStoreError.fileNotFound
         }
         cancelThumbnailTask(for: id)
+        let key = thumbnailCacheKey(for: record.url)
+        thumbnailCache.removeValue(forKey: key)
 
         try FileManager.default.removeItem(at: record.url)
         screenshots.removeAll { $0.id == id }

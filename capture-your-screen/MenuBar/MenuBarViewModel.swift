@@ -11,9 +11,15 @@ final class MenuBarViewModel: ObservableObject {
     @Published var errorMessage: String?
     @Published var selectedItem: ScreenshotHistoryItem?
     @Published var showCopyToast: Bool = false
-    @Published var browsingByDate: Bool = false
+
+    /// The month currently displayed in the calendar.
+    @Published var visibleMonth: Date = Date()
+
+    /// The date selected in the calendar (pending — not yet applied).
     @Published var selectedDate: Date = Date()
-    @Published var screenshotsForSelectedDate: [ScreenshotHistoryItem] = []
+
+    /// The applied date filter; nil means show all screenshots.
+    @Published var appliedDateFilter: Date? = nil
 
     private let captureCoordinator: CaptureCoordinator
     private let screenshotStore: ScreenshotStore
@@ -205,6 +211,78 @@ final class MenuBarViewModel: ObservableObject {
         rebuildSections()
     }
 
+    // MARK: - Calendar / Date Filter
+
+    /// Move the visible calendar month forward or backward by `delta` months.
+    func moveVisibleMonth(by delta: Int) {
+        guard let newMonth = Calendar.current.date(byAdding: .month, value: delta, to: visibleMonth) else { return }
+        visibleMonth = Calendar.current.startOfMonth(for: newMonth)
+    }
+
+    /// Select a date in the calendar without applying the filter.
+    /// Only updates the calendar's highlighted selection; history is unchanged.
+    func selectDate(_ date: Date) {
+        selectedDate = calendar.startOfDay(for: date)
+        visibleMonth = calendar.startOfMonth(for: selectedDate)
+    }
+
+    /// Apply the currently selected date as the date filter.
+    func applySelectedDateFilter() {
+        appliedDateFilter = calendar.startOfDay(for: selectedDate)
+    }
+
+    /// Clear the date filter, showing all screenshots again.
+    /// Also resets selectedDate and visibleMonth so the calendar is in a clean state
+    /// if the user re-opens the date picker.
+    func clearDateFilter() {
+        appliedDateFilter = nil
+        let today = calendar.startOfDay(for: Date())
+        selectedDate = today
+        visibleMonth = calendar.startOfMonth(for: today)
+    }
+
+    /// Jump to today: selects today and moves calendar to this month.
+    func selectToday() {
+        let today = calendar.startOfDay(for: Date())
+        selectedDate = today
+        visibleMonth = calendar.startOfMonth(for: today)
+    }
+
+    /// Jump to yesterday: selects yesterday and moves calendar to that month.
+    func selectYesterday() {
+        guard let yesterday = calendar.date(byAdding: .day, value: -1, to: Date()) else { return }
+        selectedDate = calendar.startOfDay(for: yesterday)
+        visibleMonth = calendar.startOfMonth(for: selectedDate)
+    }
+
+    /// Toggle the date picker panel visibility.
+    func toggleDatePicker() {
+        // No-op here — handled by local state in MenuBarView
+    }
+
+    /// Whether a date filter is currently applied (show filtered view vs all).
+    var browsingByDate: Bool {
+        appliedDateFilter != nil
+    }
+
+    /// Screenshots filtered by appliedDateFilter.
+    /// Returns all screenshots when appliedDateFilter is nil.
+    var filteredHistoryItems: [ScreenshotHistoryItem] {
+        guard let filterDate = appliedDateFilter else {
+            return screenshotStore.screenshots.map { $0.toHistoryItem() }
+        }
+        return screenshotStore.screenshots
+            .filter { calendar.isDate($0.date, inSameDayAs: filterDate) }
+            .map { $0.toHistoryItem() }
+    }
+
+    /// Dates (startOfDay) that have screenshots — used to show green dots in the calendar.
+    var datesWithScreenshots: Set<Date> {
+        Set(screenshotStore.screenshots.map { calendar.startOfDay(for: $0.date) })
+    }
+
+    private var calendar: Calendar { Calendar.current }
+
     // MARK: - Internal
 
     func rebuildSections() {
@@ -221,34 +299,6 @@ final class MenuBarViewModel: ObservableObject {
                 )
             }
             .sorted { $0.date > $1.date }
-
-        if browsingByDate { rebuildDateGroup() }
-    }
-
-    func toggleDateBrowsing() {
-        if browsingByDate {
-            browsingByDate = false
-        } else {
-            selectedDate = Date()
-            browsingByDate = true
-            rebuildDateGroup()
-        }
-    }
-
-    func setSelectedDate(_ date: Date) {
-        selectedDate = date
-        browsingByDate = true
-        rebuildDateGroup()
-    }
-
-    func rebuildDateGroup() {
-        let cal = Calendar.current
-        let all = screenshotStore.screenshots.map { $0.toHistoryItem() }
-        screenshotsForSelectedDate = all.filter { cal.isDate($0.date, inSameDayAs: selectedDate) }
-    }
-
-    func clearDateFilter() {
-        browsingByDate = false
     }
 
     func updateHotkeyDisplay(_ display: String) {
@@ -296,5 +346,12 @@ final class MenuBarViewModel: ObservableObject {
                 showCopyToast = false
             }
         }
+    }
+}
+
+extension Calendar {
+    func startOfMonth(for date: Date) -> Date {
+        let components = dateComponents([.year, .month], from: date)
+        return self.date(from: components) ?? date
     }
 }

@@ -6,7 +6,6 @@ struct MenuBarView: View {
     @Environment(\.dismiss) private var dismiss: DismissAction
     @Environment(\.openWindow) private var openWindow
     @State private var showingDatePicker: Bool = false
-    @State private var pendingDate: Date = Date()
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -150,7 +149,7 @@ struct MenuBarView: View {
         VStack(alignment: .leading, spacing: 10) {
             if viewModel.browsingByDate {
                 selectedDateBanner
-                historyScroll(items: viewModel.screenshotsForSelectedDate)
+                historyScroll(items: viewModel.filteredHistoryItems)
             } else if !showingDatePicker && historyIsEmpty {
                 VStack(alignment: .leading, spacing: 6) {
                     Text("No screenshots yet")
@@ -178,35 +177,39 @@ struct MenuBarView: View {
     }
 
     private var selectedDateBanner: some View {
-        HStack(spacing: 8) {
-            Button(action: { viewModel.copyLatestScreenshot(on: viewModel.selectedDate) }) {
-                Image(systemName: "doc.on.doc.fill")
-                    .foregroundColor(.accentColor)
-            }
-            .buttonStyle(.plain)
-            .help("Copy latest screenshot for this date")
-
-            Text(selectedDateTitle)
-                .font(.caption.bold())
-                .foregroundColor(.accentColor)
-
-            Spacer()
-
-            Button(action: {
-                withAnimation(.easeInOut(duration: 0.2)) {
-                    viewModel.clearDateFilter()
-                    showingDatePicker = false
-                }
-            }) {
-                Image(systemName: "xmark.circle.fill")
-                    .foregroundColor(.secondary)
-            }
-            .buttonStyle(.plain)
-            .help("Clear date filter")
+        guard let filterDate = viewModel.appliedDateFilter else {
+            return AnyView(EmptyView())
         }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 9)
-            .background(panelCardBackground)
+        return AnyView(
+            HStack(spacing: 8) {
+                Button(action: { viewModel.copyLatestScreenshot(on: filterDate) }) {
+                    Image(systemName: "doc.on.doc.fill")
+                        .foregroundColor(.accentColor)
+                }
+                .buttonStyle(.plain)
+                .help("Copy latest screenshot for this date")
+
+                Text(appliedDateFilterTitle)
+                    .font(.caption.bold())
+                    .foregroundColor(.accentColor)
+
+                Spacer()
+
+                Button(action: {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        viewModel.clearDateFilter()
+                    }
+                }) {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundColor(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help("Clear date filter")
+            }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 9)
+                .background(panelCardBackground)
+        )
     }
 
     private var permissionWarningBanner: some View {
@@ -279,7 +282,7 @@ struct MenuBarView: View {
 
                 Button(action: {
                     withAnimation(.easeInOut(duration: 0.2)) {
-                        viewModel.setSelectedDate(section.date)
+                        viewModel.selectDate(section.date)
                     }
                 }) {
                     VStack(alignment: .leading, spacing: 1) {
@@ -443,15 +446,18 @@ struct MenuBarView: View {
         viewModel.historySections.isEmpty
     }
 
-    private var selectedDateTitle: String {
+    private var appliedDateFilterTitle: String {
+        guard let filterDate = viewModel.appliedDateFilter else {
+            return ""
+        }
         let formatter = DateFormatter()
         formatter.dateStyle = .medium
-        return formatter.string(from: viewModel.selectedDate)
+        return formatter.string(from: filterDate)
     }
 
     private var headerSubtitle: String {
         if viewModel.browsingByDate {
-            return "Browsing screenshots from \(selectedDateTitle)"
+            return "Browsing screenshots from \(appliedDateFilterTitle)"
         }
         return "Recent captures, organized by day"
     }
@@ -469,43 +475,40 @@ struct MenuBarView: View {
                 VStack(alignment: .leading, spacing: 3) {
                     Text("Browse by date")
                         .font(.headline)
-                    Text(viewModel.browsingByDate ? selectedDateTitle : "Choose a day to focus on screenshots from that date.")
+                    Text("Choose a day to focus on screenshots from that date.")
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }
 
                 Spacer()
 
-                if viewModel.browsingByDate {
-                    Button("Clear") {
-                        withAnimation(.easeInOut(duration: 0.2)) {
-                            viewModel.clearDateFilter()
-                            showingDatePicker = false
-                        }
+                Button("All Dates") {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        viewModel.clearDateFilter()
+                        showingDatePicker = false
                     }
-                    .buttonStyle(.borderless)
-                    .foregroundColor(.accentColor)
                 }
+                .buttonStyle(.borderless)
+                .foregroundColor(.accentColor)
             }
 
             VStack(spacing: 14) {
                 CompactCalendarView(
-                    selectedDate: $pendingDate,
-                    datesWithScreenshots: Set(
-                        viewModel.historySections.map { Calendar.current.startOfDay(for: $0.date) }
-                    )
+                    visibleMonth: $viewModel.visibleMonth,
+                    selectedDate: $viewModel.selectedDate,
+                    datesWithScreenshots: viewModel.datesWithScreenshots
                 )
                     .frame(maxWidth: .infinity)
 
                 HStack(spacing: 10) {
                     Button("Today") {
-                        pendingDate = Date()
+                        viewModel.selectToday()
                     }
                     .buttonStyle(.bordered)
                     .controlSize(.regular)
 
                     Button("Yesterday") {
-                        pendingDate = Calendar.current.date(byAdding: .day, value: -1, to: Date()) ?? Date()
+                        viewModel.selectYesterday()
                     }
                     .buttonStyle(.bordered)
                     .controlSize(.regular)
@@ -514,8 +517,8 @@ struct MenuBarView: View {
 
                     Button("Apply") {
                         withAnimation(.spring(response: 0.28, dampingFraction: 0.86)) {
+                            viewModel.applySelectedDateFilter()
                             showingDatePicker = false
-                            viewModel.setSelectedDate(pendingDate)
                         }
                     }
                     .buttonStyle(.borderedProminent)
@@ -526,15 +529,6 @@ struct MenuBarView: View {
         }
         .padding(14)
         .background(panelCardBackground)
-        .onChange(of: pendingDate) { _, newValue in
-            // Auto-apply on click for better UX, or keep it manual? 
-            // The user might want to browse months without applying.
-            // But usually clicking a date means "go to this date".
-            withAnimation(.spring(response: 0.28, dampingFraction: 0.86)) {
-                viewModel.setSelectedDate(newValue)
-                showingDatePicker = false
-            }
-        }
     }
 
     private var footerSection: some View {
@@ -575,15 +569,21 @@ struct MenuBarView: View {
     }
 
     private func toggleDatePicker() {
-        if viewModel.browsingByDate {
+        if showingDatePicker {
             withAnimation(.easeInOut(duration: 0.2)) {
-                viewModel.clearDateFilter()
                 showingDatePicker = false
             }
         } else {
-            pendingDate = viewModel.selectedDate
+            // Initialize calendar to match current state
+            if let filter = viewModel.appliedDateFilter {
+                viewModel.selectedDate = filter
+                viewModel.visibleMonth = Calendar.current.startOfMonth(for: filter)
+            } else {
+                viewModel.selectedDate = Calendar.current.startOfDay(for: Date())
+                viewModel.visibleMonth = Calendar.current.startOfMonth(for: Date())
+            }
             withAnimation(.spring(response: 0.3, dampingFraction: 0.88)) {
-                showingDatePicker.toggle()
+                showingDatePicker = true
             }
         }
     }
@@ -615,19 +615,18 @@ private struct CheckerboardPreviewBackground: View {
 }
 
 private struct CompactCalendarView: View {
+    @Binding var visibleMonth: Date
     @Binding var selectedDate: Date
     let datesWithScreenshots: Set<Date>
-    @State private var displayedMonth: Date
     @GestureState private var dragTranslation: CGFloat = 0
 
     private let calendar = Calendar.current
     private let weekdays = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
 
-    init(selectedDate: Binding<Date>, datesWithScreenshots: Set<Date>) {
+    init(visibleMonth: Binding<Date>, selectedDate: Binding<Date>, datesWithScreenshots: Set<Date>) {
+        _visibleMonth = visibleMonth
         _selectedDate = selectedDate
         self.datesWithScreenshots = datesWithScreenshots
-        let month = Calendar.current.date(from: Calendar.current.dateComponents([.year, .month], from: selectedDate.wrappedValue)) ?? Date()
-        _displayedMonth = State(initialValue: month)
     }
 
     var body: some View {
@@ -667,7 +666,11 @@ private struct CompactCalendarView: View {
 
                 ForEach(monthCells) { cell in
                     Button(action: { selectedDate = cell.date }) {
-                        VStack(spacing: 2) {
+                        ZStack {
+                            Circle()
+                                .fill(isSelected(cell.date) ? Color.accentColor : Color.clear)
+                                .frame(width: 32, height: 32)
+
                             Text("\(calendar.component(.day, from: cell.date))")
                                 .font(.system(size: 15, weight: isSelected(cell.date) ? .bold : .medium))
                                 .foregroundColor(textColor(for: cell.date, isCurrentMonth: cell.isCurrentMonth))
@@ -676,9 +679,9 @@ private struct CompactCalendarView: View {
                                 .fill(Color.green)
                                 .frame(width: 4, height: 4)
                                 .opacity(showsScreenshotDot(for: cell.date, isCurrentMonth: cell.isCurrentMonth) ? 1 : 0)
+                                .offset(y: 10)
                         }
                         .frame(width: 36, height: 36)
-                        .background(selectionBackground(for: cell.date))
                     }
                     .buttonStyle(.plain)
                     .disabled(cell.date > Date())
@@ -712,14 +715,14 @@ private struct CompactCalendarView: View {
         .offset(x: dragTranslation * 0.12)
         .highPriorityGesture(monthSwipeGesture, including: .gesture)
         .onChange(of: selectedDate) { _, newValue in
-            displayedMonth = calendar.date(from: calendar.dateComponents([.year, .month], from: newValue)) ?? displayedMonth
+            visibleMonth = calendar.startOfMonth(for: newValue)
         }
     }
 
     private var monthTitle: String {
         let formatter = DateFormatter()
         formatter.dateFormat = "MMMM yyyy"
-        return formatter.string(from: displayedMonth)
+        return formatter.string(from: visibleMonth)
     }
 
     private var monthTitleView: some View {
@@ -729,42 +732,38 @@ private struct CompactCalendarView: View {
     }
 
     private var canShowNextMonth: Bool {
-        let currentMonth = calendar.date(from: calendar.dateComponents([.year, .month], from: Date())) ?? Date()
-        return displayedMonth < currentMonth
+        let currentMonth = calendar.startOfMonth(for: Date())
+        return visibleMonth < currentMonth
     }
 
     private var monthCells: [CalendarCell] {
-        guard let monthInterval = calendar.dateInterval(of: .month, for: displayedMonth) else {
+        guard let monthInterval = calendar.dateInterval(of: .month, for: visibleMonth) else {
             return []
         }
 
-        // Get the first day of the month
         let firstDayOfMonth = monthInterval.start
-        
-        // Find the first day of the week containing the first day of the month
         let firstWeekday = calendar.component(.weekday, from: firstDayOfMonth)
-        // firstWeekday: 1 = Sun, 2 = Mon, ... 7 = Sat
-        // We need to subtract (firstWeekday - 1) days to get to the preceding Sunday
         let daysToSubtract = firstWeekday - 1
         guard let startDate = calendar.date(byAdding: .day, value: -daysToSubtract, to: firstDayOfMonth) else {
             return []
         }
 
-        // Always generate 42 days (6 weeks) to keep the grid size stable
         return (0..<42).compactMap { i in
             guard let date = calendar.date(byAdding: .day, value: i, to: startDate) else { return nil }
-            let isCurrentMonth = calendar.isDate(date, equalTo: displayedMonth, toGranularity: .month)
+            let isCurrentMonth = calendar.isDate(date, equalTo: visibleMonth, toGranularity: .month)
             return CalendarCell(date: date, isCurrentMonth: isCurrentMonth)
         }
     }
 
     private func showPreviousMonth() {
-        displayedMonth = calendar.date(byAdding: .month, value: -1, to: displayedMonth) ?? displayedMonth
+        guard let newMonth = calendar.date(byAdding: .month, value: -1, to: visibleMonth) else { return }
+        visibleMonth = calendar.startOfMonth(for: newMonth)
     }
 
     private func showNextMonth() {
         guard canShowNextMonth else { return }
-        displayedMonth = calendar.date(byAdding: .month, value: 1, to: displayedMonth) ?? displayedMonth
+        guard let newMonth = calendar.date(byAdding: .month, value: 1, to: visibleMonth) else { return }
+        visibleMonth = calendar.startOfMonth(for: newMonth)
     }
 
     private var monthSwipeGesture: some Gesture {
