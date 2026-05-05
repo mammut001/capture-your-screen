@@ -28,7 +28,7 @@ struct MenuBarView: View {
                 endPoint: .bottom
             )
         )
-        .task { await viewModel.refresh() }
+        .task { await viewModel.refreshIfNeeded() }
         .overlay(alignment: .bottom) {
             VStack(spacing: 6) {
                 if viewModel.showCopyToast {
@@ -56,9 +56,11 @@ struct MenuBarView: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Label("Capture Your Screen", systemImage: "camera.viewfinder")
                         .font(.headline)
+                        .fixedSize(horizontal: false, vertical: true)
                     Text(headerSubtitle)
                         .font(.caption)
                         .foregroundColor(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
 
                 Spacer()
@@ -139,6 +141,8 @@ struct MenuBarView: View {
                     )
             }
         }
+        .zIndex(1)
+        .clipped()
     }
 
     @ViewBuilder
@@ -516,11 +520,21 @@ struct MenuBarView: View {
                     }
                     .buttonStyle(.borderedProminent)
                     .controlSize(.large)
+                    .keyboardShortcut(.defaultAction)
                 }
             }
         }
         .padding(14)
         .background(panelCardBackground)
+        .onChange(of: pendingDate) { _, newValue in
+            // Auto-apply on click for better UX, or keep it manual? 
+            // The user might want to browse months without applying.
+            // But usually clicking a date means "go to this date".
+            withAnimation(.spring(response: 0.28, dampingFraction: 0.86)) {
+                viewModel.setSelectedDate(newValue)
+                showingDatePicker = false
+            }
+        }
     }
 
     private var footerSection: some View {
@@ -619,21 +633,28 @@ private struct CompactCalendarView: View {
     var body: some View {
         VStack(spacing: 14) {
             HStack {
-                Text(monthTitle)
-                    .font(.system(size: 26, weight: .bold))
+                monthTitleView
                 Spacer()
                 Button(action: showPreviousMonth) {
                     Image(systemName: "chevron.left")
+                        .font(.system(size: 14, weight: .semibold))
                 }
                 .buttonStyle(.plain)
                 .foregroundColor(.secondary)
+                .contentShape(Rectangle())
+                .frame(width: 32, height: 32)
+                .zIndex(10)
 
                 Button(action: showNextMonth) {
                     Image(systemName: "chevron.right")
+                        .font(.system(size: 14, weight: .semibold))
                 }
                 .buttonStyle(.plain)
                 .foregroundColor(canShowNextMonth ? .secondary : .secondary.opacity(0.35))
                 .disabled(!canShowNextMonth)
+                .contentShape(Rectangle())
+                .frame(width: 32, height: 32)
+                .zIndex(10)
             }
 
             LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 7), spacing: 10) {
@@ -648,15 +669,15 @@ private struct CompactCalendarView: View {
                     Button(action: { selectedDate = cell.date }) {
                         VStack(spacing: 2) {
                             Text("\(calendar.component(.day, from: cell.date))")
-                                .font(.system(size: 17, weight: isSelected(cell.date) ? .bold : .medium))
+                                .font(.system(size: 15, weight: isSelected(cell.date) ? .bold : .medium))
                                 .foregroundColor(textColor(for: cell.date, isCurrentMonth: cell.isCurrentMonth))
 
                             Circle()
                                 .fill(Color.green)
-                                .frame(width: 5, height: 5)
+                                .frame(width: 4, height: 4)
                                 .opacity(showsScreenshotDot(for: cell.date, isCurrentMonth: cell.isCurrentMonth) ? 1 : 0)
                         }
-                        .frame(width: 42, height: 42)
+                        .frame(width: 36, height: 36)
                         .background(selectionBackground(for: cell.date))
                     }
                     .buttonStyle(.plain)
@@ -670,7 +691,7 @@ private struct CompactCalendarView: View {
                 .font(.caption)
                 .foregroundColor(.secondary)
         }
-        .padding(18)
+        .padding(14)
         .background(
             RoundedRectangle(cornerRadius: 18, style: .continuous)
                 .fill(Color.white.opacity(0.96))
@@ -701,31 +722,40 @@ private struct CompactCalendarView: View {
         return formatter.string(from: displayedMonth)
     }
 
+    private var monthTitleView: some View {
+        Text(monthTitle)
+            .font(.system(size: 20, weight: .bold))
+            .fixedSize(horizontal: true, vertical: false)
+    }
+
     private var canShowNextMonth: Bool {
         let currentMonth = calendar.date(from: calendar.dateComponents([.year, .month], from: Date())) ?? Date()
         return displayedMonth < currentMonth
     }
 
     private var monthCells: [CalendarCell] {
-        guard
-            let monthInterval = calendar.dateInterval(of: .month, for: displayedMonth),
-            let firstWeek = calendar.dateInterval(of: .weekOfMonth, for: monthInterval.start),
-            let lastWeek = calendar.dateInterval(of: .weekOfMonth, for: monthInterval.end.addingTimeInterval(-1))
-        else {
+        guard let monthInterval = calendar.dateInterval(of: .month, for: displayedMonth) else {
             return []
         }
 
-        var dates: [CalendarCell] = []
-        var cursor = firstWeek.start
-
-        while cursor < lastWeek.end {
-            let isCurrentMonth = calendar.isDate(cursor, equalTo: displayedMonth, toGranularity: .month)
-            dates.append(CalendarCell(date: cursor, isCurrentMonth: isCurrentMonth))
-            guard let next = calendar.date(byAdding: .day, value: 1, to: cursor) else { break }
-            cursor = next
+        // Get the first day of the month
+        let firstDayOfMonth = monthInterval.start
+        
+        // Find the first day of the week containing the first day of the month
+        let firstWeekday = calendar.component(.weekday, from: firstDayOfMonth)
+        // firstWeekday: 1 = Sun, 2 = Mon, ... 7 = Sat
+        // We need to subtract (firstWeekday - 1) days to get to the preceding Sunday
+        let daysToSubtract = firstWeekday - 1
+        guard let startDate = calendar.date(byAdding: .day, value: -daysToSubtract, to: firstDayOfMonth) else {
+            return []
         }
 
-        return dates
+        // Always generate 42 days (6 weeks) to keep the grid size stable
+        return (0..<42).compactMap { i in
+            guard let date = calendar.date(byAdding: .day, value: i, to: startDate) else { return nil }
+            let isCurrentMonth = calendar.isDate(date, equalTo: displayedMonth, toGranularity: .month)
+            return CalendarCell(date: date, isCurrentMonth: isCurrentMonth)
+        }
     }
 
     private func showPreviousMonth() {
@@ -738,7 +768,7 @@ private struct CompactCalendarView: View {
     }
 
     private var monthSwipeGesture: some Gesture {
-        DragGesture(minimumDistance: 18)
+        DragGesture(minimumDistance: 20)
             .updating($dragTranslation) { value, state, _ in
                 state = value.translation.width
             }
@@ -824,8 +854,12 @@ private final class SwipeCaptureView: NSView {
         fatalError("init(coder:) has not been implemented")
     }
 
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
+        false
+    }
+
     override func hitTest(_ point: NSPoint) -> NSView? {
-        self
+        nil
     }
 
     override func scrollWheel(with event: NSEvent) {

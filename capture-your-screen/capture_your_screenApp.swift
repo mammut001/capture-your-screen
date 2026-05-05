@@ -60,6 +60,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         // Refresh launch status (in case user changed it in System Settings while app was closed)
         launchAtLoginManager.refreshStatus()
 
+        Task { @MainActor [weak self] in
+            self?.screenshotStore.startWatchingScreenshotFolder()
+        }
+
         // Wire hotkey → capture coordinator
         hotkeyManager.onHotkeyPressed = { [weak self] in
             Task { @MainActor in
@@ -70,6 +74,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        Task { @MainActor [weak self] in
+            self?.screenshotStore.stopWatchingScreenshotFolder()
+        }
         hotkeyManager.unregister()
     }
 }

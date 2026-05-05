@@ -18,6 +18,10 @@ final class ScreenshotStore: ObservableObject {
     @Published private(set) var screenshots: [ScreenshotRecord] = []
 
     var resolver = StorageResolver()
+    private let folderWatcher = FolderWatcher()
+    private var scheduledRefreshTask: Task<Void, Never>?
+    private var hasLoadedHistory = false
+    private var lastRefreshAt: Date?
 
     private let dateFormatter: DateFormatter = {
         let f = DateFormatter()
@@ -30,6 +34,14 @@ final class ScreenshotStore: ObservableObject {
     /// (StorageResolver reads UserDefaults on every property access, so this is mostly for symmetry.)
     func reloadResolver() {
         objectWillChange.send()
+    }
+
+    init() {
+        folderWatcher.onChange = { [weak self] in
+            Task { @MainActor [weak self] in
+                self?.scheduleRefreshHistory()
+            }
+        }
     }
 
     // MARK: - Save
@@ -73,6 +85,7 @@ final class ScreenshotStore: ObservableObject {
             thumbnail: makeThumbnail(from: image)
         )
         screenshots.insert(record, at: 0)
+        startWatchingScreenshotFolder()
         return record
     }
 
@@ -99,24 +112,24 @@ final class ScreenshotStore: ObservableObject {
             let image = await Self.loadImageFromDisk(at: fileURL)
 
             guard !Task.isCancelled else {
-                await self?.finishThumbnailLoad(for: id)
+                self?.finishThumbnailLoad(for: id)
                 return
             }
 
             guard let image else {
                 print("ScreenshotStore: failed to load thumbnail source at \(fileURL.path)")
-                await self?.finishThumbnailLoad(for: id)
+                self?.finishThumbnailLoad(for: id)
                 return
             }
 
-            let thumbnail = await Self.makeThumbnailStatic(from: image)
+            let thumbnail = Self.makeThumbnailStatic(from: image)
 
             guard !Task.isCancelled else {
-                await self?.finishThumbnailLoad(for: id)
+                self?.finishThumbnailLoad(for: id)
                 return
             }
 
-            await self?.finishThumbnailLoad(for: id, thumbnail: thumbnail)
+            self?.finishThumbnailLoad(for: id, thumbnail: thumbnail)
         }
 
         thumbnailTasks[id] = task
@@ -156,6 +169,16 @@ final class ScreenshotStore: ObservableObject {
     /// dispatched to the main thread via `MainActor.run` because `lockFocus` requires it.
     /// Thumbnails are NOT pre-loaded — call `loadThumbnail(for:)` on demand instead.
     func refreshHistory() async {
+        scheduledRefreshTask?.cancel()
+        scheduledRefreshTask = nil
+
+        let preservedThumbnails = Dictionary(
+            uniqueKeysWithValues: screenshots.compactMap { record -> (String, NSImage)? in
+                guard let thumbnail = record.thumbnail else { return nil }
+                return (record.url.standardizedFileURL.path, thumbnail)
+            }
+        )
+
         cancelAllThumbnailTasks()
 
         let folderURL = resolver.screenshotFolderURL
@@ -164,6 +187,9 @@ final class ScreenshotStore: ObservableObject {
         // If the folder doesn't exist yet, just clear the list and bail.
         guard fm.fileExists(atPath: folderURL.path) else {
             screenshots = []
+            hasLoadedHistory = true
+            lastRefreshAt = Date()
+            folderWatcher.stop()
             return
         }
 
@@ -194,7 +220,61 @@ final class ScreenshotStore: ObservableObject {
             .sorted { $0.date > $1.date }
         }.value
 
-        screenshots = records
+        let restoredRecords = records.map { record in
+            var updatedRecord = record
+            updatedRecord.thumbnail = preservedThumbnails[record.url.standardizedFileURL.path]
+            return updatedRecord
+        }
+
+        screenshots = restoredRecords
+        hasLoadedHistory = true
+        lastRefreshAt = Date()
+        startWatchingScreenshotFolder(forceRestart: true)
+    }
+
+    func refreshHistoryIfNeeded(maxAge: TimeInterval = 5) async {
+        guard hasLoadedHistory, let lastRefreshAt, Date().timeIntervalSince(lastRefreshAt) < maxAge else {
+            await refreshHistory()
+            return
+        }
+    }
+
+    func startWatchingScreenshotFolder(forceRestart: Bool = false) {
+        let folderURL = resolver.screenshotFolderURL.standardizedFileURL
+        if !forceRestart,
+           folderWatcher.isWatching,
+           folderWatcher.watchedFolderURL == folderURL {
+            return
+        }
+
+        folderWatcher.start(watching: folderURL)
+    }
+
+    func restartWatchingScreenshotFolder() {
+        scheduledRefreshTask?.cancel()
+        scheduledRefreshTask = nil
+        folderWatcher.stop()
+        startWatchingScreenshotFolder(forceRestart: true)
+        scheduleRefreshHistory(immediate: true)
+    }
+
+    func stopWatchingScreenshotFolder() {
+        scheduledRefreshTask?.cancel()
+        scheduledRefreshTask = nil
+        folderWatcher.stop()
+    }
+
+    private func scheduleRefreshHistory(immediate: Bool = false) {
+        scheduledRefreshTask?.cancel()
+
+        let delayNanoseconds: UInt64 = immediate ? 0 : 300_000_000
+        scheduledRefreshTask = Task { [weak self] in
+            if delayNanoseconds > 0 {
+                try? await Task.sleep(nanoseconds: delayNanoseconds)
+            }
+            guard !Task.isCancelled else { return }
+            await self?.refreshHistory()
+        }
     }
 
     // MARK: - Actions

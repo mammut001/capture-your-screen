@@ -184,9 +184,7 @@ final class MenuBarViewModel: ObservableObject {
         if panel.runModal() == .OK, let url = panel.url {
             screenshotStore.resolver.customFolderURL = url
             screenshotStore.reloadResolver()
-            Task {
-                await refresh()
-            }
+            screenshotStore.restartWatchingScreenshotFolder()
         }
     }
 
@@ -194,13 +192,16 @@ final class MenuBarViewModel: ObservableObject {
     func resetToDefaultFolder() {
         screenshotStore.resolver.customFolderURL = nil
         screenshotStore.reloadResolver()
-        Task {
-            await refresh()
-        }
+        screenshotStore.restartWatchingScreenshotFolder()
     }
 
     func refresh() async {
         await screenshotStore.refreshHistory()
+        rebuildSections()
+    }
+
+    func refreshIfNeeded() async {
+        await screenshotStore.refreshHistoryIfNeeded()
         rebuildSections()
     }
 

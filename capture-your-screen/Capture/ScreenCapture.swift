@@ -18,7 +18,7 @@ enum ScreenCaptureError: Error, LocalizedError {
 }
 
 struct ScreenCapture {
-    private static let ciContext = CIContext()
+    nonisolated static let ciContext = CIContext()
 
     /// Capture a region of the specified display.
     /// - Parameters:
