@@ -320,45 +320,7 @@ struct MenuBarView: View {
     private func historyCard(item: ScreenshotHistoryItem) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             Button(action: { viewModel.copyScreenshot(item) }) {
-                ZStack(alignment: .bottomLeading) {
-                    Group {
-                        if let thumb = item.thumbnail {
-                            Image(nsImage: thumb)
-                                .resizable()
-                                .interpolation(.high)
-                                .aspectRatio(contentMode: .fit)
-                        } else {
-                            Rectangle()
-                                .fill(Color.secondary.opacity(0.14))
-                        }
-                    }
-                    .frame(maxWidth: .infinity, minHeight: 220, maxHeight: 250)
-                    .background(Color.secondary.opacity(0.08))
-
-                    HStack {
-                        Label("Tap Preview To Copy", systemImage: "doc.on.doc")
-                            .font(.caption.bold())
-                            .foregroundColor(.white)
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 6)
-                            .background(Color.black.opacity(0.72), in: Capsule())
-
-                        Spacer()
-
-                        Text(item.displayTime)
-                            .font(.caption.bold())
-                            .foregroundColor(.white)
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 6)
-                            .background(Color.black.opacity(0.72), in: Capsule())
-                    }
-                    .padding(12)
-                }
-                .clipShape(RoundedRectangle(cornerRadius: 14))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 14)
-                        .stroke(Color.black.opacity(0.08), lineWidth: 1)
-                )
+                historyPreview(item)
             }
             .buttonStyle(.plain)
 
@@ -396,6 +358,80 @@ struct MenuBarView: View {
         }
         .onAppear {
             viewModel.loadThumbnailIfNeeded(for: item)
+        }
+    }
+
+    private func historyPreview(_ item: ScreenshotHistoryItem) -> some View {
+        ZStack(alignment: .bottomLeading) {
+            previewBackground
+
+            Group {
+                if let thumb = item.thumbnail {
+                    Image(nsImage: thumb)
+                        .resizable()
+                        .interpolation(.high)
+                        .scaledToFit()
+                        .padding(10)
+                } else {
+                    VStack(spacing: 8) {
+                        ProgressView()
+                            .controlSize(.small)
+
+                        Label("Loading Preview", systemImage: "photo")
+                            .font(.caption2.weight(.semibold))
+                            .foregroundColor(.secondary)
+                    }
+                    .padding(12)
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+            HStack {
+                Label("Tap Preview To Copy", systemImage: "doc.on.doc")
+                    .font(.caption.bold())
+                    .foregroundColor(.white)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .background(Color.black.opacity(0.72), in: Capsule())
+
+                Spacer()
+
+                Text(item.displayTime)
+                    .font(.caption.bold())
+                    .foregroundColor(.white)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .background(Color.black.opacity(0.72), in: Capsule())
+            }
+            .padding(12)
+        }
+        .frame(maxWidth: .infinity, minHeight: 220, maxHeight: 250)
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(Color.black.opacity(0.08), lineWidth: 1)
+        )
+    }
+
+    private var previewBackground: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(Color(nsColor: .controlBackgroundColor))
+
+            CheckerboardPreviewBackground()
+                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(
+                    LinearGradient(
+                        colors: [
+                            Color.white.opacity(0.10),
+                            Color.clear
+                        ],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                )
         }
     }
 
@@ -536,6 +572,31 @@ struct MenuBarView: View {
                 showingDatePicker.toggle()
             }
         }
+    }
+}
+
+private struct CheckerboardPreviewBackground: View {
+    private let tileSize: CGFloat = 14
+    private let lightTile = Color.secondary.opacity(0.05)
+    private let darkTile = Color.secondary.opacity(0.10)
+
+    var body: some View {
+        GeometryReader { proxy in
+            let columns = max(Int(ceil(proxy.size.width / tileSize)), 1)
+            let rows = max(Int(ceil(proxy.size.height / tileSize)), 1)
+
+            VStack(spacing: 0) {
+                ForEach(0..<rows, id: \.self) { row in
+                    HStack(spacing: 0) {
+                        ForEach(0..<columns, id: \.self) { column in
+                            Rectangle()
+                                .fill((row + column).isMultiple(of: 2) ? lightTile : darkTile)
+                        }
+                    }
+                }
+            }
+        }
+        .allowsHitTesting(false)
     }
 }
 

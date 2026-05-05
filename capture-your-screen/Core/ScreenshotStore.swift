@@ -77,74 +77,77 @@ final class ScreenshotStore: ObservableObject {
     }
 
     private var thumbnailTasks: [String: Task<Void, Never>] = [:]
-    private let thumbnailLock = NSLock()
 
     // MARK: - Lazy Thumbnail Loading
 
-    /// Load thumbnail for a screenshot record on demand; updates the published screenshots array.
-    /// Thread-safe: concurrent calls for the same `id` are deduplicated.
-    /// All exit paths (success / failure / cancellation / record-not-found) clean up thumbnailTasks.
+    /// Load a thumbnail on demand. Calls are deduplicated per id, and all exit paths
+    /// remove the corresponding task so future appearances can retry after a failure.
     func loadThumbnail(for id: String) {
-        // Fast path: already loaded
-        if screenshots.first(where: { $0.id == id })?.thumbnail != nil {
-            return
-        }
-
-        thumbnailLock.lock()
-        if thumbnailTasks[id] != nil {
-            thumbnailLock.unlock()
-            return
-        }
-
-        // Capture the URL now while we hold the lock; avoid capturing self into the detached task.
-        let record = screenshots.first { $0.id == id }
-        guard let fileURL = record?.url else {
-            thumbnailLock.unlock()
+        guard let record = screenshots.first(where: { $0.id == id }) else {
             print("ScreenshotStore: no record found for thumbnail id \(id)")
             return
         }
+        guard record.thumbnail == nil else {
+            return
+        }
+        guard thumbnailTasks[id] == nil else {
+            return
+        }
 
-        let task = Task(priority: .utility) { [weak self] in
-            guard let self = self else { return }
+        let fileURL = record.url
+        let task = Task(priority: .utility) { [weak self, fileURL] in
+            let image = await Self.loadImageFromDisk(at: fileURL)
 
-            // Load image on background thread
-            guard let image = NSImage(contentsOf: fileURL) else {
-                print("ScreenshotStore: failed to load thumbnail source at \(fileURL.path)")
-                await MainActor.run {
-                    self.clearThumbnailTask(for: id)
-                }
+            guard !Task.isCancelled else {
+                await self?.finishThumbnailLoad(for: id)
                 return
             }
 
-            // Generate thumbnail on main actor (lockFocus requires main thread)
-            let thumb = await MainActor.run {
-                ScreenshotStore.makeThumbnailStatic(from: image)
+            guard let image else {
+                print("ScreenshotStore: failed to load thumbnail source at \(fileURL.path)")
+                await self?.finishThumbnailLoad(for: id)
+                return
             }
 
-            // Update published property on main actor
-            await MainActor.run {
-                guard let self = self else { return }
-                self.clearThumbnailTask(for: id)
-                if let idx = self.screenshots.firstIndex(where: { $0.id == id }) {
-                    var updated = self.screenshots
-                    updated[idx].thumbnail = thumb
-                    self.screenshots = updated
-                } else {
-                    // Record was deleted or history was refreshed while we were loading
-                    print("ScreenshotStore: record \(id) disappeared before thumbnail update")
-                }
+            let thumbnail = await Self.makeThumbnailStatic(from: image)
+
+            guard !Task.isCancelled else {
+                await self?.finishThumbnailLoad(for: id)
+                return
             }
+
+            await self?.finishThumbnailLoad(for: id, thumbnail: thumbnail)
         }
 
         thumbnailTasks[id] = task
-        thumbnailLock.unlock()
     }
 
-    /// Removes a thumbnail task entry. Call while holding thumbnailLock or on MainActor.
-    private func clearThumbnailTask(for id: String) {
-        thumbnailLock.lock()
+    private func finishThumbnailLoad(for id: String, thumbnail: NSImage? = nil) {
         thumbnailTasks.removeValue(forKey: id)
-        thumbnailLock.unlock()
+
+        guard let thumbnail else { return }
+
+        guard let index = screenshots.firstIndex(where: { $0.id == id }) else {
+            print("ScreenshotStore: record \(id) disappeared before thumbnail update")
+            return
+        }
+        guard screenshots[index].thumbnail == nil else { return }
+
+        var updated = screenshots
+        updated[index].thumbnail = thumbnail
+        screenshots = updated
+    }
+
+    private func cancelThumbnailTask(for id: String) {
+        thumbnailTasks[id]?.cancel()
+        thumbnailTasks.removeValue(forKey: id)
+    }
+
+    private func cancelAllThumbnailTasks() {
+        for task in thumbnailTasks.values {
+            task.cancel()
+        }
+        thumbnailTasks.removeAll()
     }
 
     // MARK: - History
@@ -153,6 +156,8 @@ final class ScreenshotStore: ObservableObject {
     /// dispatched to the main thread via `MainActor.run` because `lockFocus` requires it.
     /// Thumbnails are NOT pre-loaded — call `loadThumbnail(for:)` on demand instead.
     func refreshHistory() async {
+        cancelAllThumbnailTasks()
+
         let folderURL = resolver.screenshotFolderURL
         let fm = FileManager.default
 
@@ -213,11 +218,7 @@ final class ScreenshotStore: ObservableObject {
         guard record.url.standardized.path.hasPrefix(folderURL.path + "/") else {
             throw ScreenshotStoreError.fileNotFound
         }
-        // Cancel any in-flight thumbnail task for this id to avoid a stale callback
-        thumbnailLock.lock()
-        thumbnailTasks[id]?.cancel()
-        thumbnailTasks.removeValue(forKey: id)
-        thumbnailLock.unlock()
+        cancelThumbnailTask(for: id)
 
         try FileManager.default.removeItem(at: record.url)
         screenshots.removeAll { $0.id == id }
@@ -233,12 +234,25 @@ final class ScreenshotStore: ObservableObject {
         return rep.representation(using: .png, properties: [:])
     }
 
+    nonisolated private static func loadImageFromDisk(at url: URL) async -> NSImage? {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .utility).async {
+                guard FileManager.default.fileExists(atPath: url.path) else {
+                    continuation.resume(returning: nil)
+                    return
+                }
+
+                continuation.resume(returning: NSImage(contentsOf: url))
+            }
+        }
+    }
+
     private func makeThumbnail(from image: NSImage) -> NSImage {
         Self.makeThumbnailStatic(from: image)
     }
 
-    /// Static version so it can be called from a detached Task (no actor isolation needed).
-    nonisolated static func makeThumbnailStatic(from image: NSImage) -> NSImage {
+    @MainActor
+    private static func makeThumbnailStatic(from image: NSImage) -> NSImage {
         let targetSize = NSSize(width: 420, height: 240)
         let thumb = NSImage(size: targetSize)
         thumb.lockFocus()

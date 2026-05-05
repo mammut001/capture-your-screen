@@ -37,15 +37,19 @@ struct ScreenshotDaySection: Identifiable {
 }
 
 extension ScreenshotRecord {
-    func toHistoryItem() -> ScreenshotHistoryItem {
+    private static let historyTimeFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.dateFormat = "HH:mm:ss"
+        return formatter
+    }()
+
+    func toHistoryItem() -> ScreenshotHistoryItem {
         return ScreenshotHistoryItem(
             id: id,
             url: url,
             date: date,
             thumbnail: thumbnail,
-            displayTime: formatter.string(from: date)
+            displayTime: Self.historyTimeFormatter.string(from: date)
         )
     }
 }

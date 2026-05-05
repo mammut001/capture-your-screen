@@ -18,6 +18,8 @@ enum ScreenCaptureError: Error, LocalizedError {
 }
 
 struct ScreenCapture {
+    private static let ciContext = CIContext()
+
     /// Capture a region of the specified display.
     /// - Parameters:
     ///   - rect: Selection rectangle in the target display's local coordinates (points).
@@ -67,12 +69,10 @@ struct ScreenCapture {
         // ScreenCaptureKit already gives us a correctly oriented pixel buffer.
         // Applying an extra orientation transform here inverts the final image.
         let ciImage = CIImage(cvPixelBuffer: pixelBuffer)
-        let ciContext = CIContext()
-        guard let cgImage = ciContext.createCGImage(ciImage, from: ciImage.extent) else {
+        guard let cgImage = Self.ciContext.createCGImage(ciImage, from: ciImage.extent) else {
             throw ScreenCaptureError.captureFailed
         }
 
         return NSImage(cgImage: cgImage, size: captureRect.size)
     }
 }
-

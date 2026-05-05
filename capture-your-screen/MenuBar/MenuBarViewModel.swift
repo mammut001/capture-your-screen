@@ -114,19 +114,19 @@ final class MenuBarViewModel: ObservableObject {
 
     /// Direct copy — used by context menu (no confirm step needed).
     func copyScreenshot(_ item: ScreenshotHistoryItem) {
-        guard let image = loadImage(for: item) else { return }
-        writeImageToPasteboard(image)
-        showCopySuccess()
+        Task {
+            await copyScreenshotAsync(at: item.url)
+        }
     }
 
     func copyLatestScreenshot(on date: Date) {
-        guard let item = historySections.first(where: { Calendar.current.isDate($0.date, inSameDayAs: date) })?.items.first,
-              let image = loadImage(for: item) else {
+        guard let item = historySections.first(where: { Calendar.current.isDate($0.date, inSameDayAs: date) })?.items.first else {
             showError("Could not copy — file not found.")
             return
         }
-        writeImageToPasteboard(image)
-        showCopySuccess()
+        Task {
+            await copyScreenshotAsync(at: item.url)
+        }
     }
 
     /// Stage a row for copy (first tap); deselects if already selected.
@@ -184,7 +184,9 @@ final class MenuBarViewModel: ObservableObject {
         if panel.runModal() == .OK, let url = panel.url {
             screenshotStore.resolver.customFolderURL = url
             screenshotStore.reloadResolver()
-            objectWillChange.send()
+            Task {
+                await refresh()
+            }
         }
     }
 
@@ -192,7 +194,9 @@ final class MenuBarViewModel: ObservableObject {
     func resetToDefaultFolder() {
         screenshotStore.resolver.customFolderURL = nil
         screenshotStore.reloadResolver()
-        objectWillChange.send()
+        Task {
+            await refresh()
+        }
     }
 
     func refresh() async {
@@ -250,19 +254,35 @@ final class MenuBarViewModel: ObservableObject {
         currentHotkeyDisplay = display
     }
 
-    private func loadImage(for item: ScreenshotHistoryItem) -> NSImage? {
-        guard FileManager.default.fileExists(atPath: item.url.path),
-              let image = NSImage(contentsOf: item.url) else {
-            showError("Could not copy — file not found.")
-            return nil
+    private func copyScreenshotAsync(at url: URL) async {
+        guard let data = await Self.loadImageDataFromDisk(at: url) else {
+            showError("Could not copy — file not found or unreadable.")
+            return
         }
-        return image
+
+        writeImageDataToPasteboard(data)
+        showCopySuccess()
     }
 
-    private func writeImageToPasteboard(_ image: NSImage) {
+    nonisolated private static func loadImageDataFromDisk(at url: URL) async -> Data? {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                guard FileManager.default.fileExists(atPath: url.path) else {
+                    continuation.resume(returning: nil)
+                    return
+                }
+
+                continuation.resume(returning: try? Data(contentsOf: url))
+            }
+        }
+    }
+
+    private func writeImageDataToPasteboard(_ data: Data) {
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
-        pasteboard.writeObjects([image])
+        let item = NSPasteboardItem()
+        item.setData(data, forType: .png)
+        pasteboard.writeObjects([item])
     }
 
     private func showCopySuccess() {
