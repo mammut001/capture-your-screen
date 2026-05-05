@@ -14,12 +14,19 @@ import CoreImage.CIFilterBuiltins
 
 enum AnnotationCompositor {
 
+    /// Shared CIContext — creating one is expensive (allocates GPU resources / Metal pipeline).
+    /// Reusing a single instance avoids per-composite overhead.
+    private static let sharedCIContext = CIContext(options: [.useSoftwareRenderer: false])
+
     /// Render `annotations` on top of `baseImage` and return a new NSImage.
     /// Coordinates in annotations are normalized to 0...1.
     static func composite(
         baseImage: NSImage,
         annotations: [AnnotationItem]
     ) -> NSImage {
+        // Fast-path: no annotations → return original without any rendering.
+        guard !annotations.isEmpty else { return baseImage }
+
         guard let baseRep = pixelRepresentation(of: baseImage) else {
             // Fallback: nothing we can do, return original.
             return baseImage
@@ -176,9 +183,8 @@ enum AnnotationCompositor {
         // 3. 将像素化区域定位回原始坐标
         let positionedPixelated = pixelated.transformed(by: CGAffineTransform(translationX: ciRect.origin.x, y: ciRect.origin.y))
 
-        // 4. 用 CIContext 渲染到 CGImage，然后绘制到当前 context
-        let ciCtx = CIContext()
-        guard let resultCGImage = ciCtx.createCGImage(positionedPixelated, from: positionedPixelated.extent) else { return }
+        // 4. 用共享 CIContext 渲染到 CGImage，然后绘制到当前 context
+        guard let resultCGImage = sharedCIContext.createCGImage(positionedPixelated, from: positionedPixelated.extent) else { return }
 
         // 绘制回当前 context（AppKit 坐标，需要翻转 Y）
         let flippedRect = NSRect(
@@ -235,9 +241,8 @@ enum AnnotationCompositor {
         // 4. 定位到原始坐标
         let positionedBlurred = finalBlurred.transformed(by: CGAffineTransform(translationX: ciRect.origin.x, y: ciRect.origin.y))
 
-        // 5. 渲染并绘制回当前 context
-        let ciCtx = CIContext()
-        guard let resultCGImage = ciCtx.createCGImage(positionedBlurred, from: positionedBlurred.extent) else { return }
+        // 5. 用共享 CIContext 渲染并绘制回当前 context
+        guard let resultCGImage = sharedCIContext.createCGImage(positionedBlurred, from: positionedBlurred.extent) else { return }
 
         let flippedRect = NSRect(
             x: rect.origin.x,
