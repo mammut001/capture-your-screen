@@ -132,7 +132,7 @@ struct SelectionOverlayView: View {
                 .position(x: rect.midX, y: rect.midY)
 
             // Corner + midpoint handles
-            ForEach(handlePositions(for: rect), id: \.self) { point in
+            ForEach(Array(handlePositions(for: rect).enumerated()), id: \.offset) { _, point in
                 Rectangle()
                     .fill(Color.white)
                     .frame(width: 8, height: 8)

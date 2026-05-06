@@ -25,12 +25,16 @@ final class MenuBarViewModel: ObservableObject {
     private let screenshotStore: ScreenshotStore
     private let hotkeyManager: HotkeyManager
     private var cancellables = Set<AnyCancellable>()
+    private let calendar = Calendar.current
 
     init(captureCoordinator: CaptureCoordinator, screenshotStore: ScreenshotStore, hotkeyManager: HotkeyManager) {
         self.captureCoordinator = captureCoordinator
         self.screenshotStore = screenshotStore
         self.hotkeyManager = hotkeyManager
         self.currentHotkeyDisplay = hotkeyManager.currentConfig.displayString
+        let today = Calendar.current.startOfDay(for: Date())
+        self.selectedDate = today
+        self.visibleMonth = Calendar.current.startOfMonth(for: today)
 
         // Keep currentHotkeyDisplay in sync whenever the hotkey is changed
         hotkeyManager.$currentConfig
@@ -73,6 +77,7 @@ final class MenuBarViewModel: ObservableObject {
     /// Trigger lazy thumbnail loading for a history item.
     /// Called by the UI when a card enters the visible area.
     func loadThumbnailIfNeeded(for item: ScreenshotHistoryItem) {
+        guard item.thumbnail == nil else { return }
         screenshotStore.loadThumbnail(for: item.id)
     }
 
@@ -190,7 +195,9 @@ final class MenuBarViewModel: ObservableObject {
         if panel.runModal() == .OK, let url = panel.url {
             screenshotStore.resolver.customFolderURL = url
             screenshotStore.reloadResolver()
+            clearDateFilter()
             screenshotStore.restartWatchingScreenshotFolder()
+            objectWillChange.send()
         }
     }
 
@@ -198,16 +205,23 @@ final class MenuBarViewModel: ObservableObject {
     func resetToDefaultFolder() {
         screenshotStore.resolver.customFolderURL = nil
         screenshotStore.reloadResolver()
+        clearDateFilter()
         screenshotStore.restartWatchingScreenshotFolder()
+        objectWillChange.send()
     }
 
     func refresh() async {
-        await screenshotStore.refreshHistory()
+        await screenshotStore.refreshIfNeeded()
         rebuildSections()
     }
 
     func refreshIfNeeded() async {
-        await screenshotStore.refreshHistoryIfNeeded()
+        await screenshotStore.refreshIfNeeded()
+        rebuildSections()
+    }
+
+    func forceRefresh() async {
+        await screenshotStore.refreshHistory()
         rebuildSections()
     }
 
@@ -280,8 +294,6 @@ final class MenuBarViewModel: ObservableObject {
     var datesWithScreenshots: Set<Date> {
         Set(screenshotStore.screenshots.map { calendar.startOfDay(for: $0.date) })
     }
-
-    private var calendar: Calendar { Calendar.current }
 
     // MARK: - Internal
 

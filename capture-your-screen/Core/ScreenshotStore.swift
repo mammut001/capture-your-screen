@@ -4,13 +4,25 @@ import AppKit
 import CoreGraphics
 
 struct ScreenshotRecord: Identifiable, Hashable {
-    let id: String          // filename (unique key)
-    let url: URL            // full file URL
-    let date: Date          // capture timestamp parsed from filename
-    var thumbnail: NSImage? // lazy-loaded thumbnail; nil until loaded
+    let id: String
+    let url: URL
+    let date: Date
+    var thumbnail: NSImage?
 
-    func hash(into hasher: inout Hasher) { hasher.combine(id) }
-    static func == (lhs: Self, rhs: Self) -> Bool { lhs.id == rhs.id }
+    var filename: String { url.lastPathComponent }
+
+    nonisolated init(url: URL, date: Date, thumbnail: NSImage? = nil) {
+        let standardizedURL = url.standardizedFileURL
+        self.id = standardizedURL.path
+        self.url = standardizedURL
+        self.date = date
+        self.thumbnail = thumbnail
+    }
+
+    func hash(into hasher: inout Hasher) { hasher.combine(url.standardizedFileURL.path) }
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.url.standardizedFileURL.path == rhs.url.standardizedFileURL.path
+    }
 }
 
 @MainActor
@@ -20,6 +32,7 @@ final class ScreenshotStore: ObservableObject {
     var resolver = StorageResolver()
     private let folderWatcher = FolderWatcher()
     private var scheduledRefreshTask: Task<Void, Never>?
+    private let refreshInterval: TimeInterval = 1.5
     private var hasLoadedHistory = false
     private var lastRefreshAt: Date?
 
@@ -49,7 +62,6 @@ final class ScreenshotStore: ObservableObject {
     /// Persist an NSImage to disk; returns the saved record.
     /// File I/O is performed on a background thread to avoid blocking the main actor.
     func save(_ image: NSImage) async throws -> ScreenshotRecord {
-        print("ScreenshotStore: Attempting to save image to resolver path...")
         try resolver.ensureFolderExists()
         let folderURL = resolver.screenshotFolderURL
 
@@ -60,30 +72,22 @@ final class ScreenshotStore: ObservableObject {
         let dateFolderName = folderFormatter.string(from: now)
         let dateFolderURL = folderURL.appendingPathComponent(dateFolderName, isDirectory: true)
         
-        print("ScreenshotStore: Targeted folder: \(dateFolderURL.path)")
         try FileManager.default.createDirectory(at: dateFolderURL, withIntermediateDirectories: true)
         
         let filename = "Screenshot_\(dateFormatter.string(from: now)).png"
         let fileURL = dateFolderURL.appendingPathComponent(filename)
 
         guard let pngData = pngData(from: image) else {
-            print("ScreenshotStore: FAILED to encode image to PNG data.")
             throw ScreenshotStoreError.imageEncodingFailed
         }
 
-        print("ScreenshotStore: Writing data to disk (\(pngData.count) bytes)...")
         try await Task.detached(priority: .userInitiated) {
             try pngData.write(to: fileURL, options: .atomic)
         }.value
 
-        print("ScreenshotStore: Successfully wrote \(filename)")
-
-        let record = ScreenshotRecord(
-            id: filename,
-            url: fileURL,
-            date: now,
-            thumbnail: makeThumbnail(from: image)
-        )
+        let thumbnail = makeThumbnail(from: image)
+        let record = ScreenshotRecord(url: fileURL, date: now, thumbnail: thumbnail)
+        thumbnailCache[thumbnailCacheKey(for: record.url)] = thumbnail
         screenshots.insert(record, at: 0)
         startWatchingScreenshotFolder()
         return record
@@ -106,76 +110,72 @@ final class ScreenshotStore: ObservableObject {
     /// already-loaded thumbnails without re-reading the disk.
     func loadThumbnail(for id: String) {
         guard let record = screenshots.first(where: { $0.id == id }) else {
-            print("ScreenshotStore: no record found for thumbnail id \(id)")
             return
         }
-        guard record.thumbnail == nil else {
-            return
-        }
-        guard thumbnailTasks[id] == nil else {
-            return
-        }
-
-        // 1. Check the in-memory cache first
         let key = thumbnailCacheKey(for: record.url)
-        if let cached = thumbnailCache[key] {
-            var updated = screenshots
-            if let index = updated.firstIndex(where: { $0.id == id }) {
-                updated[index].thumbnail = cached
-                screenshots = updated
-            }
+
+        if let existingThumbnail = record.thumbnail {
+            thumbnailCache[key] = existingThumbnail
             return
         }
 
-        // 2. Not cached — kick off background load
+        if let cachedThumbnail = thumbnailCache[key] {
+            updateThumbnail(cachedThumbnail, forKey: key)
+            return
+        }
+
+        guard thumbnailTasks[key] == nil else {
+            return
+        }
+
         let fileURL = record.url
         let task = Task(priority: .utility) { [weak self, fileURL, key] in
             let image = await Self.loadImageFromDisk(at: fileURL)
 
             guard !Task.isCancelled else {
-                await self?.finishThumbnailLoad(for: id, cacheKey: key)
+                self?.clearThumbnailTask(forKey: key)
                 return
             }
 
             guard let image else {
-                print("ScreenshotStore: failed to load thumbnail source at \(fileURL.path)")
-                await self?.finishThumbnailLoad(for: id, cacheKey: key)
+                self?.clearThumbnailTask(forKey: key)
                 return
             }
 
             let thumbnail = Self.makeThumbnailStatic(from: image)
 
             guard !Task.isCancelled else {
-                await self?.finishThumbnailLoad(for: id, cacheKey: key)
+                self?.clearThumbnailTask(forKey: key)
                 return
             }
 
-            await self?.finishThumbnailLoad(for: id, cacheKey: key, thumbnail: thumbnail)
+            self?.finishThumbnailLoad(cacheKey: key, thumbnail: thumbnail)
         }
 
-        thumbnailTasks[id] = task
+        thumbnailTasks[key] = task
     }
 
-    private func finishThumbnailLoad(for id: String, cacheKey: String, thumbnail: NSImage? = nil) {
-        thumbnailTasks.removeValue(forKey: id)
-
-        guard let thumbnail else { return }
-
-        // Write to cache so re-opening the menu restores from cache, not disk
-        thumbnailCache[cacheKey] = thumbnail
-
-        guard let index = screenshots.firstIndex(where: { $0.id == id }) else {
-            print("ScreenshotStore: record \(id) disappeared before thumbnail update")
+    private func updateThumbnail(_ thumbnail: NSImage, forKey key: String) {
+        guard let index = screenshots.firstIndex(where: { thumbnailCacheKey(for: $0.url) == key }) else {
             return
         }
-        guard screenshots[index].thumbnail == nil else { return }
 
-        screenshots[index].thumbnail = thumbnail
+        guard screenshots[index].thumbnail == nil || screenshots[index].thumbnail !== thumbnail else { return }
+
+        var updated = screenshots
+        updated[index].thumbnail = thumbnail
+        screenshots = updated
     }
 
-    private func cancelThumbnailTask(for id: String) {
-        thumbnailTasks[id]?.cancel()
-        thumbnailTasks.removeValue(forKey: id)
+    private func finishThumbnailLoad(cacheKey key: String, thumbnail: NSImage) {
+        clearThumbnailTask(forKey: key)
+        thumbnailCache[key] = thumbnail
+        updateThumbnail(thumbnail, forKey: key)
+    }
+
+    private func clearThumbnailTask(forKey key: String) {
+        thumbnailTasks[key]?.cancel()
+        thumbnailTasks.removeValue(forKey: key)
     }
 
     private func cancelAllThumbnailTasks() {
@@ -192,32 +192,26 @@ final class ScreenshotStore: ObservableObject {
     /// Thumbnails are restored from the in-memory thumbnailCache so previously-loaded
     /// thumbnails survive a menu close/open cycle without re-reading the disk.
     func refreshHistory() async {
-        scheduledRefreshTask?.cancel()
-        scheduledRefreshTask = nil
-
-        // 1. Populate cache from any thumbnails already in memory before we wipe the list
         for record in screenshots {
-            let key = thumbnailCacheKey(for: record.url)
-            if record.thumbnail != nil {
-                thumbnailCache[key] = record.thumbnail
-            }
+            guard let thumbnail = record.thumbnail else { continue }
+            thumbnailCache[thumbnailCacheKey(for: record.url)] = thumbnail
         }
+
+        lastRefreshAt = Date()
 
         cancelAllThumbnailTasks()
 
         let folderURL = resolver.screenshotFolderURL
         let fm = FileManager.default
 
-        // If the folder doesn't exist yet, just clear the list and bail.
         guard fm.fileExists(atPath: folderURL.path) else {
             screenshots = []
+            thumbnailCache.removeAll()
             hasLoadedHistory = true
-            lastRefreshAt = Date()
             folderWatcher.stop()
             return
         }
 
-        // 2. Parse records on a background thread — no thumbnail loading here
         let formatter = dateFormatter
         let records: [ScreenshotRecord] = await Task.detached(priority: .utility) {
             var foundURLs: [URL] = []
@@ -239,12 +233,11 @@ final class ScreenshotStore: ObservableObject {
                     .replacingOccurrences(of: "Screenshot_", with: "")
                     .replacingOccurrences(of: ".png", with: "")
                 guard let date = formatter.date(from: datePart) else { return nil }
-                return ScreenshotRecord(id: filename, url: url, date: date, thumbnail: nil)
+                return ScreenshotRecord(url: url, date: date)
             }
             .sorted { $0.date > $1.date }
         }.value
 
-        // 3. Restore thumbnails from cache
         let restoredRecords = records.map { record in
             var updatedRecord = record
             let key = thumbnailCacheKey(for: record.url)
@@ -252,18 +245,27 @@ final class ScreenshotStore: ObservableObject {
             return updatedRecord
         }
 
-        // 4. Prune cache — remove keys that no longer have a corresponding file on disk
         let activeKeys = Set(records.map { thumbnailCacheKey(for: $0.url) })
         thumbnailCache = thumbnailCache.filter { activeKeys.contains($0.key) }
 
         screenshots = restoredRecords
         hasLoadedHistory = true
-        lastRefreshAt = Date()
         startWatchingScreenshotFolder(forceRestart: true)
     }
 
+    func refreshIfNeeded() async {
+        guard hasLoadedHistory,
+              let lastRefreshAt,
+              Date().timeIntervalSince(lastRefreshAt) < refreshInterval else {
+            await refreshHistory()
+            return
+        }
+    }
+
     func refreshHistoryIfNeeded(maxAge: TimeInterval = 5) async {
-        guard hasLoadedHistory, let lastRefreshAt, Date().timeIntervalSince(lastRefreshAt) < maxAge else {
+        guard hasLoadedHistory,
+              let lastRefreshAt,
+              Date().timeIntervalSince(lastRefreshAt) < maxAge else {
             await refreshHistory()
             return
         }
@@ -328,12 +330,12 @@ final class ScreenshotStore: ObservableObject {
         guard record.url.standardized.path.hasPrefix(folderURL.path + "/") else {
             throw ScreenshotStoreError.fileNotFound
         }
-        cancelThumbnailTask(for: id)
         let key = thumbnailCacheKey(for: record.url)
+        clearThumbnailTask(forKey: key)
         thumbnailCache.removeValue(forKey: key)
 
         try FileManager.default.removeItem(at: record.url)
-        screenshots.removeAll { $0.id == id }
+        screenshots.removeAll { thumbnailCacheKey(for: $0.url) == key }
     }
 
     // MARK: - Helpers

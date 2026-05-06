@@ -3,9 +3,10 @@ import AppKit
 
 struct MenuBarView: View {
     @EnvironmentObject var viewModel: MenuBarViewModel
+    @EnvironmentObject var appDelegate: AppDelegate
     @Environment(\.dismiss) private var dismiss: DismissAction
-    @Environment(\.openWindow) private var openWindow
     @State private var showingDatePicker: Bool = false
+    @State private var pendingDate: Date = Date()
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -66,9 +67,7 @@ struct MenuBarView: View {
 
                 Button(action: toggleDatePicker) {
                     HStack(spacing: 6) {
-                        Image(systemName: viewModel.browsingByDate
-                              ? "arrow.uturn.backward.circle"
-                              : (showingDatePicker ? "calendar.badge.minus" : "calendar"))
+                        Image(systemName: dateButtonSymbolName)
                         Text(dateButtonTitle)
                     }
                     .font(.caption.weight(.semibold))
@@ -176,11 +175,9 @@ struct MenuBarView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
 
+    @ViewBuilder
     private var selectedDateBanner: some View {
-        guard let filterDate = viewModel.appliedDateFilter else {
-            return AnyView(EmptyView())
-        }
-        return AnyView(
+        if let filterDate = viewModel.appliedDateFilter {
             HStack(spacing: 8) {
                 Button(action: { viewModel.copyLatestScreenshot(on: filterDate) }) {
                     Image(systemName: "doc.on.doc.fill")
@@ -189,7 +186,7 @@ struct MenuBarView: View {
                 .buttonStyle(.plain)
                 .help("Copy latest screenshot for this date")
 
-                Text(appliedDateFilterTitle)
+                Text(formattedDate(filterDate))
                     .font(.caption.bold())
                     .foregroundColor(.accentColor)
 
@@ -198,6 +195,7 @@ struct MenuBarView: View {
                 Button(action: {
                     withAnimation(.easeInOut(duration: 0.2)) {
                         viewModel.clearDateFilter()
+                        showingDatePicker = false
                     }
                 }) {
                     Image(systemName: "xmark.circle.fill")
@@ -206,10 +204,10 @@ struct MenuBarView: View {
                 .buttonStyle(.plain)
                 .help("Clear date filter")
             }
-                .padding(.horizontal, 14)
-                .padding(.vertical, 9)
-                .background(panelCardBackground)
-        )
+            .padding(.horizontal, 14)
+            .padding(.vertical, 9)
+            .background(panelCardBackground)
+        }
     }
 
     private var permissionWarningBanner: some View {
@@ -446,27 +444,37 @@ struct MenuBarView: View {
         viewModel.historySections.isEmpty
     }
 
-    private var appliedDateFilterTitle: String {
-        guard let filterDate = viewModel.appliedDateFilter else {
-            return ""
-        }
+    private func formattedDate(_ date: Date) -> String {
         let formatter = DateFormatter()
         formatter.dateStyle = .medium
-        return formatter.string(from: filterDate)
+        return formatter.string(from: date)
     }
 
     private var headerSubtitle: String {
-        if viewModel.browsingByDate {
-            return "Browsing screenshots from \(appliedDateFilterTitle)"
+        if let filterDate = viewModel.appliedDateFilter {
+            return "Browsing screenshots from \(formattedDate(filterDate))"
         }
         return "Recent captures, organized by day"
     }
 
+    private var dateButtonSymbolName: String {
+        if showingDatePicker {
+            return "calendar.badge.minus"
+        }
+        if viewModel.browsingByDate {
+            return "arrow.uturn.backward.circle"
+        }
+        return "calendar"
+    }
+
     private var dateButtonTitle: String {
+        if showingDatePicker {
+            return "Hide Date"
+        }
         if viewModel.browsingByDate {
             return "Back to All"
         }
-        return showingDatePicker ? "Hide Date" : "Pick Date"
+        return "Pick Date"
     }
 
     private var datePickerCard: some View {
@@ -539,8 +547,14 @@ struct MenuBarView: View {
             .buttonStyle(.bordered)
 
             Button(action: {
-                NSApp.activate(ignoringOtherApps: true)
-                openWindow(id: "settings")
+                // Dismiss the MenuBar popup first — the system popup window always
+                // sits on top, so Settings would be hidden behind it if we don't close it.
+                dismiss()
+                // Small delay lets the popup finish its close animation before
+                // the Settings window appears, so there's no visual overlap.
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                    appDelegate.openSettingsWindow()
+                }
             }) {
                 Label("Settings", systemImage: "gearshape")
             }
@@ -573,14 +587,15 @@ struct MenuBarView: View {
             withAnimation(.easeInOut(duration: 0.2)) {
                 showingDatePicker = false
             }
+        } else if viewModel.browsingByDate {
+            withAnimation(.easeInOut(duration: 0.2)) {
+                viewModel.clearDateFilter()
+                showingDatePicker = false
+            }
         } else {
-            // Initialize calendar to match current state
             if let filter = viewModel.appliedDateFilter {
                 viewModel.selectedDate = filter
                 viewModel.visibleMonth = Calendar.current.startOfMonth(for: filter)
-            } else {
-                viewModel.selectedDate = Calendar.current.startOfDay(for: Date())
-                viewModel.visibleMonth = Calendar.current.startOfMonth(for: Date())
             }
             withAnimation(.spring(response: 0.3, dampingFraction: 0.88)) {
                 showingDatePicker = true
