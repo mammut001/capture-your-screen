@@ -6,8 +6,28 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		A1B2C3D12F801E7800857E01 /* ScreenCapture.swift in capture-screen-helper */ = {isa = PBXBuildFile; fileRef = A1B2C3C12F801E7800857E01 /* ScreenCapture.swift */; };
+		A1B2C3D22F801E7800857E01 /* PermissionManager.swift in capture-screen-helper */ = {isa = PBXBuildFile; fileRef = A1B2C3C22F801E7800857E01 /* PermissionManager.swift */; };
+		A1B2C3D32F801E7800857E01 /* ScreenshotEncoding.swift in capture-screen-helper */ = {isa = PBXBuildFile; fileRef = A1B2C3C32F801E7800857E01 /* ScreenshotEncoding.swift */; };
+		A1B2C3D42F801E7800857E01 /* main.swift in capture-screen-helper */ = {isa = PBXBuildFile; fileRef = A1B2C3C42F801E7800857E01 /* main.swift */; };
+		A1B2C3D52F801E7800857E01 /* CLIArguments.swift in capture-screen-helper */ = {isa = PBXBuildFile; fileRef = A1B2C3C52F801E7800857E01 /* CLIArguments.swift */; };
+		A1B2C3D62F801E7800857E01 /* HelperJSON.swift in capture-screen-helper */ = {isa = PBXBuildFile; fileRef = A1B2C3C62F801E7800857E01 /* HelperJSON.swift */; };
+		A1B2C3D72F801E7800857E01 /* HelperRunner.swift in capture-screen-helper */ = {isa = PBXBuildFile; fileRef = A1B2C3C72F801E7800857E01 /* HelperRunner.swift */; };
+		A1B2C3D82F801E7800857E01 /* CLIArgumentsSelfTest.swift in capture-screen-helper */ = {isa = PBXBuildFile; fileRef = A1B2C3C82F801E7800857E01 /* CLIArgumentsSelfTest.swift */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXFileReference section */
 		9F759A542F801E7800857E89 /* capture-your-screen.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "capture-your-screen.app"; sourceTree = BUILT_PRODUCTS_DIR; };
+		A1B2C3B12F801E7800857E01 /* capture-screen-helper */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; includeInIndex = 0; path = "capture-screen-helper"; sourceTree = BUILT_PRODUCTS_DIR; };
+		A1B2C3C12F801E7800857E01 /* ScreenCapture.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = ScreenCapture.swift; path = "capture-your-screen/Capture/ScreenCapture.swift"; sourceTree = "<group>"; };
+		A1B2C3C22F801E7800857E01 /* PermissionManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = PermissionManager.swift; path = "capture-your-screen/Core/PermissionManager.swift"; sourceTree = "<group>"; };
+		A1B2C3C32F801E7800857E01 /* ScreenshotEncoding.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = ScreenshotEncoding.swift; path = "capture-your-screen/Core/ScreenshotEncoding.swift"; sourceTree = "<group>"; };
+		A1B2C3C42F801E7800857E01 /* main.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = main.swift; sourceTree = "<group>"; };
+		A1B2C3C52F801E7800857E01 /* CLIArguments.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CLIArguments.swift; sourceTree = "<group>"; };
+		A1B2C3C62F801E7800857E01 /* HelperJSON.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HelperJSON.swift; sourceTree = "<group>"; };
+		A1B2C3C72F801E7800857E01 /* HelperRunner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HelperRunner.swift; sourceTree = "<group>"; };
+		A1B2C3C82F801E7800857E01 /* CLIArgumentsSelfTest.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CLIArgumentsSelfTest.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -26,6 +46,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		A1B2C3F12F801E7800857E01 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -33,6 +60,8 @@
 			isa = PBXGroup;
 			children = (
 				9F759A562F801E7800857E89 /* capture-your-screen */,
+				A1B2C3E12F801E7800857E01 /* capture-screen-helper */,
+				A1B2C3E22F801E7800857E01 /* SharedCaptureSources */,
 				9F759A552F801E7800857E89 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -41,8 +70,31 @@
 			isa = PBXGroup;
 			children = (
 				9F759A542F801E7800857E89 /* capture-your-screen.app */,
+				A1B2C3B12F801E7800857E01 /* capture-screen-helper */,
 			);
 			name = Products;
+			sourceTree = "<group>";
+		};
+		A1B2C3E12F801E7800857E01 /* capture-screen-helper */ = {
+			isa = PBXGroup;
+			children = (
+				A1B2C3C42F801E7800857E01 /* main.swift */,
+				A1B2C3C52F801E7800857E01 /* CLIArguments.swift */,
+				A1B2C3C62F801E7800857E01 /* HelperJSON.swift */,
+				A1B2C3C72F801E7800857E01 /* HelperRunner.swift */,
+				A1B2C3C82F801E7800857E01 /* CLIArgumentsSelfTest.swift */,
+			);
+			path = "capture-screen-helper";
+			sourceTree = "<group>";
+		};
+		A1B2C3E22F801E7800857E01 /* SharedCaptureSources */ = {
+			isa = PBXGroup;
+			children = (
+				A1B2C3C12F801E7800857E01 /* ScreenCapture.swift */,
+				A1B2C3C22F801E7800857E01 /* PermissionManager.swift */,
+				A1B2C3C32F801E7800857E01 /* ScreenshotEncoding.swift */,
+			);
+			name = SharedCaptureSources;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -70,6 +122,24 @@
 			productReference = 9F759A542F801E7800857E89 /* capture-your-screen.app */;
 			productType = "com.apple.product-type.application";
 		};
+		A1B2C3A12F801E7800857E01 /* capture-screen-helper */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A1B2C3B22F801E7800857E01 /* Build configuration list for PBXNativeTarget "capture-screen-helper" */;
+			buildPhases = (
+				A1B2C3E32F801E7800857E01 /* Sources */,
+				A1B2C3F12F801E7800857E01 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = "capture-screen-helper";
+			packageProductDependencies = (
+			);
+			productName = "capture-screen-helper";
+			productReference = A1B2C3B12F801E7800857E01 /* capture-screen-helper */;
+			productType = "com.apple.product-type.tool";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -81,6 +151,9 @@
 				LastUpgradeCheck = 2630;
 				TargetAttributes = {
 					9F759A532F801E7800857E89 = {
+						CreatedOnToolsVersion = 26.3;
+					};
+					A1B2C3A12F801E7800857E01 = {
 						CreatedOnToolsVersion = 26.3;
 					};
 				};
@@ -100,6 +173,7 @@
 			projectRoot = "";
 			targets = (
 				9F759A532F801E7800857E89 /* capture-your-screen */,
+				A1B2C3A12F801E7800857E01 /* capture-screen-helper */,
 			);
 		};
 /* End PBXProject section */
@@ -119,6 +193,21 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A1B2C3E32F801E7800857E01 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A1B2C3D42F801E7800857E01 /* main.swift in capture-screen-helper */,
+				A1B2C3D52F801E7800857E01 /* CLIArguments.swift in capture-screen-helper */,
+				A1B2C3D62F801E7800857E01 /* HelperJSON.swift in capture-screen-helper */,
+				A1B2C3D72F801E7800857E01 /* HelperRunner.swift in capture-screen-helper */,
+				A1B2C3D82F801E7800857E01 /* CLIArgumentsSelfTest.swift in capture-screen-helper */,
+				A1B2C3D12F801E7800857E01 /* ScreenCapture.swift in capture-screen-helper */,
+				A1B2C3D22F801E7800857E01 /* PermissionManager.swift in capture-screen-helper */,
+				A1B2C3D32F801E7800857E01 /* ScreenshotEncoding.swift in capture-screen-helper */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -307,6 +396,40 @@
 			};
 			name = Release;
 		};
+		A1B2C3B32F801E7800857E01 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = Z5D5N7CU6L;
+				ENABLE_HARDENED_RUNTIME = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MARKETING_VERSION = 0.1.0;
+				OTHER_SWIFT_FLAGS = "-parse-as-library";
+				PRODUCT_NAME = "capture-screen-helper";
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		A1B2C3B42F801E7800857E01 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = Z5D5N7CU6L;
+				ENABLE_HARDENED_RUNTIME = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MARKETING_VERSION = 0.1.0;
+				OTHER_SWIFT_FLAGS = "-parse-as-library";
+				PRODUCT_NAME = "capture-screen-helper";
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -324,6 +447,15 @@
 			buildConfigurations = (
 				9F759A602F801E7900857E89 /* Debug */,
 				9F759A612F801E7900857E89 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		A1B2C3B22F801E7800857E01 /* Build configuration list for PBXNativeTarget "capture-screen-helper" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A1B2C3B32F801E7800857E01 /* Debug */,
+				A1B2C3B42F801E7800857E01 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

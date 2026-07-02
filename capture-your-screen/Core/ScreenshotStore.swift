@@ -341,11 +341,7 @@ final class ScreenshotStore: ObservableObject {
     // MARK: - Helpers
 
     private func pngData(from image: NSImage) -> Data? {
-        guard let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
-            return nil
-        }
-        let rep = NSBitmapImageRep(cgImage: cgImage)
-        return rep.representation(using: .png, properties: [:])
+        ScreenshotEncoding.pngData(from: image)
     }
 
     nonisolated private static func loadImageFromDisk(at url: URL) async -> NSImage? {
