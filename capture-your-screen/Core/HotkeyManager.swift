@@ -50,23 +50,35 @@ final class HotkeyManager: ObservableObject {
         }
     }
 
+    /// Install the Carbon event handler and register the current hotkey combo.
     func register() {
-        guard handlerRef == nil else { return } // Already registered
-        
-        var spec = EventTypeSpec(
-            eventClass: OSType(kEventClassKeyboard),
-            eventKind: UInt32(kEventHotKeyPressed)
-        )
-        let selfPtr = Unmanaged.passUnretained(self).toOpaque()
-        InstallEventHandler(
-            GetApplicationEventTarget(),
-            carbonHotkeyCallback,
-            1,
-            &spec,
-            selfPtr,
-            &handlerRef
-        )
-        registerHotKey()
+        ensureRegistered()
+    }
+
+    /// Idempotent registration — safe to call whenever the app wakes up.
+    func ensureRegistered() {
+        if handlerRef == nil {
+            var spec = EventTypeSpec(
+                eventClass: OSType(kEventClassKeyboard),
+                eventKind: UInt32(kEventHotKeyPressed)
+            )
+            let selfPtr = Unmanaged.passUnretained(self).toOpaque()
+            let status = InstallEventHandler(
+                GetApplicationEventTarget(),
+                carbonHotkeyCallback,
+                1,
+                &spec,
+                selfPtr,
+                &handlerRef
+            )
+            if status != noErr {
+                print("HotkeyManager: InstallEventHandler failed with status \(status)")
+            }
+        }
+
+        if hotKeyRef == nil {
+            registerHotKey()
+        }
     }
 
     private func registerHotKey() {

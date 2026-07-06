@@ -6,6 +6,10 @@
     <key>LSUIElement</key>
     <true/>
 
+    <!-- Keep the global hotkey listener responsive when the menu window is closed -->
+    <key>NSAppSleepDisabled</key>
+    <true/>
+
     <!-- Screen Recording permission prompt description -->
     <key>NSScreenCaptureUsageDescription</key>
     <string>Capture Your Screen needs permission to capture your screen when you use the screenshot hotkey.</string>

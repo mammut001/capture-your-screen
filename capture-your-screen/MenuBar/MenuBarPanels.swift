@@ -4,6 +4,7 @@ import AppKit
 struct MenuBarView: View {
     @EnvironmentObject var viewModel: MenuBarViewModel
     @EnvironmentObject var appDelegate: AppDelegate
+    @EnvironmentObject var hotkeyManager: HotkeyManager
     @Environment(\.dismiss) private var dismiss: DismissAction
     @State private var showingDatePicker: Bool = false
     @State private var pendingDate: Date = Date()
@@ -29,6 +30,7 @@ struct MenuBarView: View {
             )
         )
         .task { await viewModel.refreshIfNeeded() }
+        .onAppear { hotkeyManager.ensureRegistered() }
         .overlay(alignment: .bottom) {
             VStack(spacing: 6) {
                 if viewModel.showCopyToast {

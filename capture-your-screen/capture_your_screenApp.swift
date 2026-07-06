@@ -12,7 +12,13 @@ import ServiceManagement
 
 @main
 struct capture_your_screenApp: App {
+    // Eagerly create the delegate so hotkey registration runs at launch,
+    // not only after the menu-bar window is opened for the first time.
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
+
+    init() {
+        _ = appDelegate
+    }
 
     var body: some Scene {
         MenuBarExtra("Capture Your Screen", systemImage: "camera.viewfinder") {
@@ -39,6 +45,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
 
     /// Manually managed Settings window — gives us full control over window level.
     private var settingsWindowController: SettingsWindowController?
+    /// Prevents App Nap from deferring the global hotkey event handler.
+    private var hotkeyActivity: NSObjectProtocol?
 
     lazy var coordinator: CaptureCoordinator = CaptureCoordinator(
         screenshotStore: screenshotStore,
@@ -51,6 +59,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         hotkeyManager: hotkeyManager
     )
 
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        NSApp.setActivationPolicy(.accessory)
+
+        hotkeyManager.onHotkeyPressed = { [weak self] in
+            Task { @MainActor in
+                self?.coordinator.startCapture()
+            }
+        }
+        hotkeyManager.register()
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
 
@@ -60,17 +79,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             self?.screenshotStore.startWatchingScreenshotFolder()
         }
 
-        hotkeyManager.onHotkeyPressed = { [weak self] in
-            Task { @MainActor in
-                self?.coordinator.startCapture()
-            }
-        }
-        hotkeyManager.register()
+        hotkeyActivity = ProcessInfo.processInfo.beginActivity(
+            options: [.userInitiated, .idleSystemSleepDisabled],
+            reason: "Listen for global screenshot hotkey"
+        )
+        hotkeyManager.ensureRegistered()
 
         askLaunchAtLoginIfNeeded()
     }
 
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        false
+    }
+
     func applicationWillTerminate(_ notification: Notification) {
+        if let hotkeyActivity {
+            ProcessInfo.processInfo.endActivity(hotkeyActivity)
+            self.hotkeyActivity = nil
+        }
+
         Task { @MainActor [weak self] in
             self?.screenshotStore.stopWatchingScreenshotFolder()
         }
