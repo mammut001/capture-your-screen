@@ -2,21 +2,20 @@ import Combine
 import Foundation
 import AppKit
 import CoreGraphics
+import ImageIO
 
 struct ScreenshotRecord: Identifiable, Hashable {
     let id: String
     let url: URL
     let date: Date
-    var thumbnail: NSImage?
 
     var filename: String { url.lastPathComponent }
 
-    nonisolated init(url: URL, date: Date, thumbnail: NSImage? = nil) {
+    nonisolated init(url: URL, date: Date) {
         let standardizedURL = url.standardizedFileURL
         self.id = standardizedURL.path
         self.url = standardizedURL
         self.date = date
-        self.thumbnail = thumbnail
     }
 
     func hash(into hasher: inout Hasher) { hasher.combine(url.standardizedFileURL.path) }
@@ -27,9 +26,12 @@ struct ScreenshotRecord: Identifiable, Hashable {
 
 @MainActor
 final class ScreenshotStore: ObservableObject {
+    /// Metadata-only list (ids/urls/dates). Thumbnail pixels live in `thumbnailsByID`.
     @Published private(set) var screenshots: [ScreenshotRecord] = []
+    /// Lazy preview images keyed by record id (standardized path).
+    @Published private(set) var thumbnailsByID: [String: NSImage] = [:]
 
-    var resolver = StorageResolver()
+    let resolver = StorageResolver()
     private let folderWatcher = FolderWatcher()
     private var scheduledRefreshTask: Task<Void, Never>?
     private let refreshInterval: TimeInterval = 1.5
@@ -43,11 +45,10 @@ final class ScreenshotStore: ObservableObject {
         return f
     }()
 
-    /// Call this when the custom folder preference changes so the resolver re-reads UserDefaults.
-    /// (StorageResolver reads UserDefaults on every property access, so this is mostly for symmetry.)
-    func reloadResolver() {
-        objectWillChange.send()
-    }
+    /// Max concurrent disk→thumbnail jobs (visible cards still request lazily).
+    private let maxConcurrentThumbnailLoads = 3
+    private var activeThumbnailLoads = 0
+    private var pendingThumbnailIDs: [String] = []
 
     init() {
         folderWatcher.onChange = { [weak self] in
@@ -59,42 +60,42 @@ final class ScreenshotStore: ObservableObject {
 
     // MARK: - Save
 
-    /// Persist an NSImage to disk; returns the saved record.
-    /// File I/O is performed on a background thread to avoid blocking the main actor.
     func save(_ image: NSImage) async throws -> ScreenshotRecord {
-        try resolver.ensureFolderExists()
-        let folderURL = resolver.screenshotFolderURL
+        let folderURL = try resolver.prepareFolder()
 
         let now = Date()
-        
+
         let folderFormatter = DateFormatter()
         folderFormatter.dateFormat = "yyyy-MM-dd"
         let dateFolderName = folderFormatter.string(from: now)
         let dateFolderURL = folderURL.appendingPathComponent(dateFolderName, isDirectory: true)
-        
+
         try FileManager.default.createDirectory(at: dateFolderURL, withIntermediateDirectories: true)
-        
+
         let filename = "Screenshot_\(dateFormatter.string(from: now)).png"
         let fileURL = dateFolderURL.appendingPathComponent(filename)
 
         guard let pngData = pngData(from: image) else {
-            throw ScreenshotStoreError.imageEncodingFailed
+            throw StorageError.imageEncodingFailed
         }
 
         try await Task.detached(priority: .userInitiated) {
             try pngData.write(to: fileURL, options: .atomic)
         }.value
 
-        let thumbnail = makeThumbnail(from: image)
-        let record = ScreenshotRecord(url: fileURL, date: now, thumbnail: thumbnail)
-        thumbnailCache[thumbnailCacheKey(for: record.url)] = thumbnail
+        let thumbnail = await Task.detached(priority: .utility) {
+            Self.makeThumbnailStatic(from: image)
+        }.value
+
+        let record = ScreenshotRecord(url: fileURL, date: now)
+        let key = thumbnailCacheKey(for: record.url)
+        publishThumbnail(thumbnail, forKey: key)
         screenshots.insert(record, at: 0)
         startWatchingScreenshotFolder()
         return record
     }
 
     private var thumbnailTasks: [String: Task<Void, Never>] = [:]
-    private var thumbnailCache: [String: NSImage] = [:]
 
     // MARK: - Cache Key
 
@@ -102,25 +103,19 @@ final class ScreenshotStore: ObservableObject {
         url.standardizedFileURL.path
     }
 
+    func thumbnail(for id: String) -> NSImage? {
+        thumbnailsByID[id]
+    }
+
     // MARK: - Lazy Thumbnail Loading
 
-    /// Load a thumbnail on demand. Calls are deduplicated per id, and all exit paths
-    /// remove the corresponding task so future appearances can retry after a failure.
-    /// Thumbnails are cached by file path — closing and reopening the menu preserves
-    /// already-loaded thumbnails without re-reading the disk.
     func loadThumbnail(for id: String) {
         guard let record = screenshots.first(where: { $0.id == id }) else {
             return
         }
         let key = thumbnailCacheKey(for: record.url)
 
-        if let existingThumbnail = record.thumbnail {
-            thumbnailCache[key] = existingThumbnail
-            return
-        }
-
-        if let cachedThumbnail = thumbnailCache[key] {
-            updateThumbnail(cachedThumbnail, forKey: key)
+        if thumbnailsByID[key] != nil {
             return
         }
 
@@ -128,54 +123,69 @@ final class ScreenshotStore: ObservableObject {
             return
         }
 
+        guard resolver.securityAccess.isAccessing
+                || resolver.securityAccess.startAccessing(record.url.deletingLastPathComponent()) else {
+            return
+        }
+
+        if activeThumbnailLoads >= maxConcurrentThumbnailLoads {
+            if !pendingThumbnailIDs.contains(id) {
+                pendingThumbnailIDs.append(id)
+            }
+            return
+        }
+
+        startThumbnailTask(for: record, key: key)
+    }
+
+    private func startThumbnailTask(for record: ScreenshotRecord, key: String) {
+        activeThumbnailLoads += 1
         let fileURL = record.url
-        let task = Task(priority: .utility) { [weak self, fileURL, key] in
-            let image = await Self.loadImageFromDisk(at: fileURL)
+        let task = Task.detached(priority: .utility) { [weak self, fileURL, key] in
+            let thumbnail = Self.loadThumbnailFromDisk(at: fileURL)
 
-            guard !Task.isCancelled else {
-                self?.clearThumbnailTask(forKey: key)
-                return
+            await MainActor.run {
+                guard let self else { return }
+                guard !Task.isCancelled else {
+                    self.finishThumbnailTaskSlot(forKey: key)
+                    return
+                }
+                if let thumbnail {
+                    self.finishThumbnailLoad(cacheKey: key, thumbnail: thumbnail)
+                } else {
+                    self.finishThumbnailTaskSlot(forKey: key)
+                }
             }
-
-            guard let image else {
-                self?.clearThumbnailTask(forKey: key)
-                return
-            }
-
-            let thumbnail = Self.makeThumbnailStatic(from: image)
-
-            guard !Task.isCancelled else {
-                self?.clearThumbnailTask(forKey: key)
-                return
-            }
-
-            self?.finishThumbnailLoad(cacheKey: key, thumbnail: thumbnail)
         }
 
         thumbnailTasks[key] = task
     }
 
-    private func updateThumbnail(_ thumbnail: NSImage, forKey key: String) {
-        guard let index = screenshots.firstIndex(where: { thumbnailCacheKey(for: $0.url) == key }) else {
-            return
-        }
-
-        guard screenshots[index].thumbnail == nil || screenshots[index].thumbnail !== thumbnail else { return }
-
-        var updated = screenshots
-        updated[index].thumbnail = thumbnail
-        screenshots = updated
+    /// Updates only the thumbnail map — never rewrites `screenshots`.
+    private func publishThumbnail(_ thumbnail: NSImage, forKey key: String) {
+        if thumbnailsByID[key] === thumbnail { return }
+        thumbnailsByID = HistorySectionBuilder.applyingThumbnail(thumbnail, for: key, to: thumbnailsByID)
     }
 
     private func finishThumbnailLoad(cacheKey key: String, thumbnail: NSImage) {
-        clearThumbnailTask(forKey: key)
-        thumbnailCache[key] = thumbnail
-        updateThumbnail(thumbnail, forKey: key)
+        publishThumbnail(thumbnail, forKey: key)
+        finishThumbnailTaskSlot(forKey: key)
+    }
+
+    private func finishThumbnailTaskSlot(forKey key: String) {
+        thumbnailTasks[key] = nil
+        activeThumbnailLoads = max(0, activeThumbnailLoads - 1)
+        drainPendingThumbnailLoads()
     }
 
     private func clearThumbnailTask(forKey key: String) {
+        guard thumbnailTasks[key] != nil else { return }
         thumbnailTasks[key]?.cancel()
-        thumbnailTasks.removeValue(forKey: key)
+        thumbnailTasks[key] = nil
+        activeThumbnailLoads = max(0, activeThumbnailLoads - 1)
+        pendingThumbnailIDs.removeAll { id in
+            screenshots.first(where: { $0.id == id }).map { thumbnailCacheKey(for: $0.url) } == key
+        }
     }
 
     private func cancelAllThumbnailTasks() {
@@ -183,30 +193,50 @@ final class ScreenshotStore: ObservableObject {
             task.cancel()
         }
         thumbnailTasks.removeAll()
+        pendingThumbnailIDs.removeAll()
+        activeThumbnailLoads = 0
+    }
+
+    private func drainPendingThumbnailLoads() {
+        while activeThumbnailLoads < maxConcurrentThumbnailLoads, !pendingThumbnailIDs.isEmpty {
+            let nextID = pendingThumbnailIDs.removeFirst()
+            guard let record = screenshots.first(where: { $0.id == nextID }) else { continue }
+            let key = thumbnailCacheKey(for: record.url)
+            if thumbnailsByID[key] != nil { continue }
+            if thumbnailTasks[key] != nil { continue }
+            startThumbnailTask(for: record, key: key)
+        }
     }
 
     // MARK: - History
 
-    /// Rebuild screenshot history. Disk I/O runs in background; thumbnail rendering is
-    /// dispatched to the main thread via `MainActor.run` because `lockFocus` requires it.
-    /// Thumbnails are restored from the in-memory thumbnailCache so previously-loaded
-    /// thumbnails survive a menu close/open cycle without re-reading the disk.
     func refreshHistory() async {
-        for record in screenshots {
-            guard let thumbnail = record.thumbnail else { continue }
-            thumbnailCache[thumbnailCacheKey(for: record.url)] = thumbnail
-        }
-
         lastRefreshAt = Date()
 
         cancelAllThumbnailTasks()
 
-        let folderURL = resolver.screenshotFolderURL
+        guard resolver.hasValidFolder, let folderURL = resolver.screenshotFolderURL else {
+            screenshots = []
+            thumbnailsByID = [:]
+            hasLoadedHistory = true
+            folderWatcher.stop()
+            resolver.securityAccess.stopAccessing()
+            return
+        }
+
+        guard resolver.securityAccess.startAccessing(folderURL) else {
+            screenshots = []
+            thumbnailsByID = [:]
+            hasLoadedHistory = true
+            folderWatcher.stop()
+            return
+        }
+
         let fm = FileManager.default
 
         guard fm.fileExists(atPath: folderURL.path) else {
             screenshots = []
-            thumbnailCache.removeAll()
+            thumbnailsByID = [:]
             hasLoadedHistory = true
             folderWatcher.stop()
             return
@@ -238,17 +268,16 @@ final class ScreenshotStore: ObservableObject {
             .sorted { $0.date > $1.date }
         }.value
 
-        let restoredRecords = records.map { record in
-            var updatedRecord = record
-            let key = thumbnailCacheKey(for: record.url)
-            updatedRecord.thumbnail = thumbnailCache[key]
-            return updatedRecord
+        let activeKeys = Set(records.map { thumbnailCacheKey(for: $0.url) })
+        let pruned = thumbnailsByID.filter { activeKeys.contains($0.key) }
+        if pruned.count != thumbnailsByID.count {
+            thumbnailsByID = pruned
         }
 
-        let activeKeys = Set(records.map { thumbnailCacheKey(for: $0.url) })
-        thumbnailCache = thumbnailCache.filter { activeKeys.contains($0.key) }
-
-        screenshots = restoredRecords
+        // Only republish list when membership/order changes — not when thumbnails change.
+        if !HistorySectionBuilder.membershipEquals(screenshots, records) {
+            screenshots = records
+        }
         hasLoadedHistory = true
         startWatchingScreenshotFolder(forceRestart: true)
     }
@@ -272,7 +301,10 @@ final class ScreenshotStore: ObservableObject {
     }
 
     func startWatchingScreenshotFolder(forceRestart: Bool = false) {
-        let folderURL = resolver.screenshotFolderURL.standardizedFileURL
+        guard let folderURL = resolver.screenshotFolderURL?.standardizedFileURL else { return }
+
+        guard resolver.securityAccess.startAccessing(folderURL) else { return }
+
         if !forceRestart,
            folderWatcher.isWatching,
            folderWatcher.watchedFolderURL == folderURL {
@@ -312,9 +344,17 @@ final class ScreenshotStore: ObservableObject {
     // MARK: - Actions
 
     func copyToClipboard(id: String) throws {
-        guard let record = screenshots.first(where: { $0.id == id }),
-              let image = NSImage(contentsOf: record.url) else {
-            throw ScreenshotStoreError.fileNotFound
+        guard let record = screenshots.first(where: { $0.id == id }) else {
+            throw StorageError.fileNotFound
+        }
+        guard resolver.isFileInScreenshotFolder(record.url) else {
+            throw StorageError.fileNotInScreenshotDirectory
+        }
+        guard resolver.securityAccess.startAccessing(record.url.deletingLastPathComponent()) else {
+            throw StorageError.securityScopedAccessDenied
+        }
+        guard let image = NSImage(contentsOf: record.url) else {
+            throw StorageError.fileReadFailed(CocoaError(.fileReadUnknown))
         }
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
@@ -323,20 +363,58 @@ final class ScreenshotStore: ObservableObject {
 
     func delete(id: String) throws {
         guard let record = screenshots.first(where: { $0.id == id }) else {
-            throw ScreenshotStoreError.fileNotFound
+            throw StorageError.fileNotFound
         }
-        // Defense-in-depth: ensure the target file is inside the designated screenshots folder
-        let folderURL = resolver.screenshotFolderURL.standardized
-        guard record.url.standardized.path.hasPrefix(folderURL.path + "/") else {
-            throw ScreenshotStoreError.fileNotFound
+        guard resolver.isFileInScreenshotFolder(record.url) else {
+            throw StorageError.fileNotInScreenshotDirectory
+        }
+        guard resolver.securityAccess.startAccessing(record.url.deletingLastPathComponent()) else {
+            throw StorageError.securityScopedAccessDenied
         }
         let key = thumbnailCacheKey(for: record.url)
         clearThumbnailTask(forKey: key)
-        thumbnailCache.removeValue(forKey: key)
+        var nextThumbs = thumbnailsByID
+        nextThumbs.removeValue(forKey: key)
+        thumbnailsByID = nextThumbs
 
         try FileManager.default.removeItem(at: record.url)
         screenshots.removeAll { thumbnailCacheKey(for: $0.url) == key }
     }
+
+    // MARK: - Test / internal hooks
+
+    /// Installs a metadata-only list without touching thumbnails (unit tests).
+    func replaceScreenshotsForTesting(_ records: [ScreenshotRecord]) {
+        screenshots = records
+    }
+
+    /// Applies one thumbnail the same way production load completion does (unit tests).
+    func applyThumbnailForTesting(_ image: NSImage, id: String) {
+        finishThumbnailLoad(cacheKey: id, thumbnail: image)
+    }
+
+    var screenshotsPublishCountForTesting: Int { _screenshotsPublishCount }
+    var thumbnailsPublishCountForTesting: Int { _thumbnailsPublishCount }
+
+    private var _screenshotsPublishCount = 0
+    private var _thumbnailsPublishCount = 0
+    private var didInstallPublishCounters = false
+
+    func installPublishCountersForTesting() {
+        guard !didInstallPublishCounters else { return }
+        didInstallPublishCounters = true
+        $screenshots
+            .sink { [weak self] _ in self?._screenshotsPublishCount += 1 }
+            .store(in: &testingCancellables)
+        $thumbnailsByID
+            .sink { [weak self] _ in self?._thumbnailsPublishCount += 1 }
+            .store(in: &testingCancellables)
+        // Reset after initial subscription emissions.
+        _screenshotsPublishCount = 0
+        _thumbnailsPublishCount = 0
+    }
+
+    private var testingCancellables = Set<AnyCancellable>()
 
     // MARK: - Helpers
 
@@ -344,37 +422,61 @@ final class ScreenshotStore: ObservableObject {
         ScreenshotEncoding.pngData(from: image)
     }
 
-    nonisolated private static func loadImageFromDisk(at url: URL) async -> NSImage? {
-        await withCheckedContinuation { continuation in
-            DispatchQueue.global(qos: .utility).async {
-                guard FileManager.default.fileExists(atPath: url.path) else {
-                    continuation.resume(returning: nil)
-                    return
-                }
+    /// ImageIO thumbnail — avoids decoding full-resolution PNG on the main actor.
+    nonisolated static func loadThumbnailFromDisk(at url: URL, maxPixelSize: CGFloat = 420) -> NSImage? {
+        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }
 
-                continuation.resume(returning: NSImage(contentsOf: url))
-            }
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceThumbnailMaxPixelSize: Int(max(1, maxPixelSize)),
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceShouldCacheImmediately: true
+        ]
+
+        guard let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else {
+            return nil
         }
+        return NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
     }
 
-    private func makeThumbnail(from image: NSImage) -> NSImage {
-        Self.makeThumbnailStatic(from: image)
-    }
-
-    @MainActor
-    private static func makeThumbnailStatic(from image: NSImage) -> NSImage {
+    nonisolated static func makeThumbnailStatic(from image: NSImage) -> NSImage {
         let targetSize = NSSize(width: 420, height: 240)
-        let thumb = NSImage(size: targetSize)
-        thumb.lockFocus()
+        let fit = aspectFitRect(for: image.size, in: NSRect(origin: .zero, size: targetSize))
+
+        guard let rep = NSBitmapImageRep(
+            bitmapDataPlanes: nil,
+            pixelsWide: Int(targetSize.width),
+            pixelsHigh: Int(targetSize.height),
+            bitsPerSample: 8,
+            samplesPerPixel: 4,
+            hasAlpha: true,
+            isPlanar: false,
+            colorSpaceName: .deviceRGB,
+            bytesPerRow: 0,
+            bitsPerPixel: 0
+        ) else {
+            return image
+        }
+
+        guard let context = NSGraphicsContext(bitmapImageRep: rep) else {
+            return image
+        }
+
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = context
         NSColor.clear.set()
         NSRect(origin: .zero, size: targetSize).fill()
         image.draw(
-            in: aspectFitRect(for: image.size, in: NSRect(origin: .zero, size: targetSize)),
+            in: fit,
             from: .zero,
             operation: .copy,
             fraction: 1.0
         )
-        thumb.unlockFocus()
+        NSGraphicsContext.restoreGraphicsState()
+
+        let thumb = NSImage(size: targetSize)
+        thumb.addRepresentation(rep)
         return thumb
     }
 
@@ -391,17 +493,5 @@ final class ScreenshotStore: ObservableObject {
             y: bounds.midY - (drawSize.height / 2)
         )
         return NSRect(origin: origin, size: drawSize)
-    }
-}
-
-enum ScreenshotStoreError: Error, LocalizedError {
-    case imageEncodingFailed
-    case fileNotFound
-
-    var errorDescription: String? {
-        switch self {
-        case .imageEncodingFailed: return "Failed to encode the screenshot as PNG."
-        case .fileNotFound: return "Screenshot file not found."
-        }
     }
 }

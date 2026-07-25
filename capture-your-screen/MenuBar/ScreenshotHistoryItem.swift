@@ -1,15 +1,14 @@
 import Foundation
 import AppKit
 
-struct ScreenshotHistoryItem: Identifiable {
+struct ScreenshotHistoryItem: Identifiable, Equatable {
     let id: String
     let url: URL
     let date: Date
-    let thumbnail: NSImage?
     let displayTime: String
 }
 
-struct ScreenshotDaySection: Identifiable {
+struct ScreenshotDaySection: Identifiable, Equatable {
     let date: Date
     let items: [ScreenshotHistoryItem]
 
@@ -44,11 +43,10 @@ extension ScreenshotRecord {
     }()
 
     func toHistoryItem() -> ScreenshotHistoryItem {
-        return ScreenshotHistoryItem(
+        ScreenshotHistoryItem(
             id: id,
             url: url,
             date: date,
-            thumbnail: thumbnail,
             displayTime: Self.historyTimeFormatter.string(from: date)
         )
     }

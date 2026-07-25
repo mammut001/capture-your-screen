@@ -12,31 +12,34 @@ final class MenuBarViewModel: ObservableObject {
     @Published var selectedItem: ScreenshotHistoryItem?
     @Published var showCopyToast: Bool = false
 
-    /// The month currently displayed in the calendar.
     @Published var visibleMonth: Date = Date()
-
-    /// The date selected in the calendar (pending — not yet applied).
     @Published var selectedDate: Date = Date()
-
-    /// The applied date filter; nil means show all screenshots.
     @Published var appliedDateFilter: Date? = nil
+
+    @Published var storageError: StorageError?
+    @Published private(set) var permissionStatus: PermissionStatus = .notDetermined
+    /// Mirrors store preview map so cards re-render without rebuilding day sections.
+    @Published private(set) var thumbnailsByID: [String: NSImage] = [:]
 
     private let captureCoordinator: CaptureCoordinator
     private let screenshotStore: ScreenshotStore
     private let hotkeyManager: HotkeyManager
     private var cancellables = Set<AnyCancellable>()
     private let calendar = Calendar.current
+    private var lastMembershipSignature: [String] = []
+    /// Counts full section rebuilds (tests / diagnostics).
+    private(set) var sectionRebuildCount = 0
 
     init(captureCoordinator: CaptureCoordinator, screenshotStore: ScreenshotStore, hotkeyManager: HotkeyManager) {
         self.captureCoordinator = captureCoordinator
         self.screenshotStore = screenshotStore
         self.hotkeyManager = hotkeyManager
         self.currentHotkeyDisplay = hotkeyManager.currentConfig.displayString
+        self.permissionStatus = captureCoordinator.permissionStatus
         let today = Calendar.current.startOfDay(for: Date())
         self.selectedDate = today
         self.visibleMonth = Calendar.current.startOfMonth(for: today)
 
-        // Keep currentHotkeyDisplay in sync whenever the hotkey is changed
         hotkeyManager.$currentConfig
             .receive(on: RunLoop.main)
             .sink { [weak self] config in
@@ -44,15 +47,21 @@ final class MenuBarViewModel: ObservableObject {
             }
             .store(in: &cancellables)
 
-        // Automatically rebuild history groups whenever the store changes
+        // Rebuild day sections only when the set of files changes — not per thumbnail.
         screenshotStore.$screenshots
             .receive(on: RunLoop.main)
-            .sink { [weak self] _ in
-                self?.rebuildSections()
+            .sink { [weak self] records in
+                self?.applyScreenshotMembership(records)
             }
             .store(in: &cancellables)
 
-        // Track captureCoordinator state so isCapturing stays accurate
+        screenshotStore.$thumbnailsByID
+            .receive(on: RunLoop.main)
+            .sink { [weak self] thumbs in
+                self?.thumbnailsByID = thumbs
+            }
+            .store(in: &cancellables)
+
         captureCoordinator.$state
             .receive(on: RunLoop.main)
             .sink { [weak self] state in
@@ -68,27 +77,42 @@ final class MenuBarViewModel: ObservableObject {
             }
             .store(in: &cancellables)
 
-        // Initial build
-        rebuildSections()
+        captureCoordinator.$permissionStatus
+            .receive(on: RunLoop.main)
+            .sink { [weak self] status in
+                self?.permissionStatus = status
+            }
+            .store(in: &cancellables)
+
+        applyScreenshotMembership(screenshotStore.screenshots)
+        thumbnailsByID = screenshotStore.thumbnailsByID
+        checkMigration()
     }
 
     // MARK: - Thumbnail Loading
 
-    /// Trigger lazy thumbnail loading for a history item.
-    /// Called by the UI when a card enters the visible area.
+    func thumbnail(for item: ScreenshotHistoryItem) -> NSImage? {
+        thumbnailsByID[item.id] ?? screenshotStore.thumbnail(for: item.id)
+    }
+
     func loadThumbnailIfNeeded(for item: ScreenshotHistoryItem) {
-        guard item.thumbnail == nil else { return }
+        guard thumbnail(for: item) == nil else { return }
         screenshotStore.loadThumbnail(for: item.id)
     }
 
     // MARK: - Actions
 
     func startCapture() {
+        checkStorageReady()
+        refreshPermissionStatus()
         captureCoordinator.startCapture()
     }
 
-    var permissionStatus: PermissionStatus {
-        captureCoordinator.permissionStatus
+    @discardableResult
+    func refreshPermissionStatus() -> PermissionStatus {
+        let status = captureCoordinator.refreshPermissionStatus()
+        permissionStatus = status
+        return status
     }
 
     func openPermissionSettings() {
@@ -96,20 +120,31 @@ final class MenuBarViewModel: ObservableObject {
     }
 
     func openScreenshotFolder() {
-        let rootURL = screenshotStore.resolver.screenshotFolderURL
-        
+        guard let folderURL = screenshotStore.resolver.screenshotFolderURL else {
+            showError("No folder selected. Please choose a folder in Settings.")
+            return
+        }
+
+        guard screenshotStore.resolver.securityAccess.startAccessing(folderURL) else {
+            showError("Cannot access the screenshot folder. Please re-select it in Settings.")
+            return
+        }
+
         let folderFormatter = DateFormatter()
         folderFormatter.dateFormat = "yyyy-MM-dd"
         let dateFolderName = folderFormatter.string(from: Date())
-        let todayFolderURL = rootURL.appendingPathComponent(dateFolderName, isDirectory: true)
-        
-        // Open today's folder if it exists, otherwise fallback to root folder
-        let targetURL = FileManager.default.fileExists(atPath: todayFolderURL.path) ? todayFolderURL : rootURL
-        
-        try? FileManager.default.createDirectory(at: targetURL, withIntermediateDirectories: true)
+        let todayFolderURL = folderURL.appendingPathComponent(dateFolderName, isDirectory: true)
+        let targetURL = FileManager.default.fileExists(atPath: todayFolderURL.path) ? todayFolderURL : folderURL
 
-        // Select the first file in the folder so Finder opens and highlights it;
-        // fall back to selecting the folder itself when it is empty.
+        if !FileManager.default.fileExists(atPath: targetURL.path) {
+            do {
+                try FileManager.default.createDirectory(at: targetURL, withIntermediateDirectories: true)
+            } catch {
+                showError("Could not create folder: \(error.localizedDescription)")
+                return
+            }
+        }
+
         let fileToSelect: URL
         if let firstFile = FileManager.default.enumerator(
             at: targetURL,
@@ -123,7 +158,6 @@ final class MenuBarViewModel: ObservableObject {
         NSWorkspace.shared.activateFileViewerSelecting([fileToSelect])
     }
 
-    /// Direct copy — used by context menu (no confirm step needed).
     func copyScreenshot(_ item: ScreenshotHistoryItem) {
         Task {
             await copyScreenshotAsync(at: item.url)
@@ -140,7 +174,6 @@ final class MenuBarViewModel: ObservableObject {
         }
     }
 
-    /// Stage a row for copy (first tap); deselects if already selected.
     func selectItem(_ item: ScreenshotHistoryItem) {
         withAnimation(.easeInOut(duration: 0.2)) {
             if selectedItem?.id == item.id {
@@ -151,7 +184,6 @@ final class MenuBarViewModel: ObservableObject {
         }
     }
 
-    /// Execute copy after the user confirms (second tap on the green button).
     func confirmCopy(_ item: ScreenshotHistoryItem) {
         copyScreenshot(item)
         selectedItem = nil
@@ -159,29 +191,44 @@ final class MenuBarViewModel: ObservableObject {
 
     private func showError(_ message: String) {
         errorMessage = message
-        // Auto-clear after 3 s so the banner doesn't linger.
         DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
             if self?.errorMessage == message { self?.errorMessage = nil }
         }
     }
 
     func showInFinder(_ item: ScreenshotHistoryItem) {
-        guard FileManager.default.fileExists(atPath: item.url.path) else { return }
+        guard screenshotStore.resolver.isFileInScreenshotFolder(item.url) else {
+            showError("File is not in the screenshots folder.")
+            return
+        }
+        guard FileManager.default.fileExists(atPath: item.url.path) else {
+            showError("File not found.")
+            return
+        }
+        guard screenshotStore.resolver.securityAccess.startAccessing(item.url.deletingLastPathComponent()) else {
+            showError("Cannot access file location.")
+            return
+        }
         NSWorkspace.shared.activateFileViewerSelecting([item.url])
     }
 
     func deleteScreenshot(_ item: ScreenshotHistoryItem) {
-        try? screenshotStore.delete(id: item.id)
-        rebuildSections()
+        do {
+            try screenshotStore.delete(id: item.id)
+            // Membership publisher will rebuild sections once.
+        } catch {
+            showError(error.localizedDescription)
+        }
     }
 
-    /// Human-readable display of the current save folder path.
     var screenshotFolderDisplay: String {
-        let url = screenshotStore.resolver.screenshotFolderURL
+        guard screenshotStore.resolver.hasValidFolder,
+              let url = screenshotStore.resolver.screenshotFolderURL else {
+            return "No folder selected"
+        }
         return url.path.replacingOccurrences(of: NSHomeDirectory(), with: "~")
     }
 
-    /// Open an NSOpenPanel so the user can pick any folder (including iCloud Drive).
     func chooseScreenshotFolder() {
         let panel = NSOpenPanel()
         panel.canChooseFiles = false
@@ -190,64 +237,64 @@ final class MenuBarViewModel: ObservableObject {
         panel.canCreateDirectories = true
         panel.prompt = "Choose"
         panel.message = "Choose a folder to save screenshots.\nYou can point this to iCloud Drive or any other location."
-        // Pre-select the current folder so the panel opens there
-        panel.directoryURL = screenshotStore.resolver.screenshotFolderURL
-        if panel.runModal() == .OK, let url = panel.url {
-            screenshotStore.resolver.customFolderURL = url
-            screenshotStore.reloadResolver()
+
+        if let oldPath = screenshotStore.resolver.oldPathString {
+            panel.directoryURL = URL(fileURLWithPath: oldPath)
+        } else if let currentURL = screenshotStore.resolver.screenshotFolderURL {
+            panel.directoryURL = currentURL
+        } else {
+            let pictures = FileManager.default.urls(for: .picturesDirectory, in: .userDomainMask).first
+            panel.directoryURL = pictures
+        }
+
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+
+        do {
+            try screenshotStore.resolver.saveBookmark(for: url)
             clearDateFilter()
             screenshotStore.restartWatchingScreenshotFolder()
             objectWillChange.send()
+        } catch {
+            showError(error.localizedDescription)
         }
     }
 
-    /// Reset save location back to the default (~/Pictures/Screenshots).
     func resetToDefaultFolder() {
-        screenshotStore.resolver.customFolderURL = nil
-        screenshotStore.reloadResolver()
-        clearDateFilter()
-        screenshotStore.restartWatchingScreenshotFolder()
-        objectWillChange.send()
+        screenshotStore.resolver.clearBookmark()
+        chooseScreenshotFolder()
     }
 
     func refresh() async {
         await screenshotStore.refreshIfNeeded()
-        rebuildSections()
+        applyScreenshotMembership(screenshotStore.screenshots)
     }
 
     func refreshIfNeeded() async {
         await screenshotStore.refreshIfNeeded()
-        rebuildSections()
+        applyScreenshotMembership(screenshotStore.screenshots)
     }
 
     func forceRefresh() async {
         await screenshotStore.refreshHistory()
-        rebuildSections()
+        applyScreenshotMembership(screenshotStore.screenshots)
     }
 
     // MARK: - Calendar / Date Filter
 
-    /// Move the visible calendar month forward or backward by `delta` months.
     func moveVisibleMonth(by delta: Int) {
         guard let newMonth = Calendar.current.date(byAdding: .month, value: delta, to: visibleMonth) else { return }
         visibleMonth = Calendar.current.startOfMonth(for: newMonth)
     }
 
-    /// Select a date in the calendar without applying the filter.
-    /// Only updates the calendar's highlighted selection; history is unchanged.
     func selectDate(_ date: Date) {
         selectedDate = calendar.startOfDay(for: date)
         visibleMonth = calendar.startOfMonth(for: selectedDate)
     }
 
-    /// Apply the currently selected date as the date filter.
     func applySelectedDateFilter() {
         appliedDateFilter = calendar.startOfDay(for: selectedDate)
     }
 
-    /// Clear the date filter, showing all screenshots again.
-    /// Also resets selectedDate and visibleMonth so the calendar is in a clean state
-    /// if the user re-opens the date picker.
     func clearDateFilter() {
         appliedDateFilter = nil
         let today = calendar.startOfDay(for: Date())
@@ -255,32 +302,25 @@ final class MenuBarViewModel: ObservableObject {
         visibleMonth = calendar.startOfMonth(for: today)
     }
 
-    /// Jump to today: selects today and moves calendar to this month.
     func selectToday() {
         let today = calendar.startOfDay(for: Date())
         selectedDate = today
         visibleMonth = calendar.startOfMonth(for: today)
     }
 
-    /// Jump to yesterday: selects yesterday and moves calendar to that month.
     func selectYesterday() {
         guard let yesterday = calendar.date(byAdding: .day, value: -1, to: Date()) else { return }
         selectedDate = calendar.startOfDay(for: yesterday)
         visibleMonth = calendar.startOfMonth(for: selectedDate)
     }
 
-    /// Toggle the date picker panel visibility.
     func toggleDatePicker() {
-        // No-op here — handled by local state in MenuBarView
     }
 
-    /// Whether a date filter is currently applied (show filtered view vs all).
     var browsingByDate: Bool {
         appliedDateFilter != nil
     }
 
-    /// Screenshots filtered by appliedDateFilter.
-    /// Returns all screenshots when appliedDateFilter is nil.
     var filteredHistoryItems: [ScreenshotHistoryItem] {
         guard let filterDate = appliedDateFilter else {
             return screenshotStore.screenshots.map { $0.toHistoryItem() }
@@ -290,34 +330,102 @@ final class MenuBarViewModel: ObservableObject {
             .map { $0.toHistoryItem() }
     }
 
-    /// Dates (startOfDay) that have screenshots — used to show green dots in the calendar.
     var datesWithScreenshots: Set<Date> {
         Set(screenshotStore.screenshots.map { calendar.startOfDay(for: $0.date) })
     }
 
     // MARK: - Internal
 
-    func rebuildSections() {
-        let items = screenshotStore.screenshots.map { $0.toHistoryItem() }
-        let groupedByDay = Dictionary(grouping: items) { item in
-            Calendar.current.startOfDay(for: item.date)
-        }
+    /// Rebuilds day sections only when membership (ids/order) changes.
+    func applyScreenshotMembership(_ records: [ScreenshotRecord]) {
+        let signature = HistorySectionBuilder.membershipSignature(for: records)
+        guard signature != lastMembershipSignature else { return }
+        lastMembershipSignature = signature
+        rebuildSections(from: records)
+    }
 
-        historySections = groupedByDay
-            .map { date, dayItems in
-                ScreenshotDaySection(
-                    date: date,
-                    items: dayItems.sorted { $0.date > $1.date }
-                )
-            }
-            .sorted { $0.date > $1.date }
+    func rebuildSections() {
+        rebuildSections(from: screenshotStore.screenshots)
+        lastMembershipSignature = HistorySectionBuilder.membershipSignature(for: screenshotStore.screenshots)
+    }
+
+    private func rebuildSections(from records: [ScreenshotRecord]) {
+        sectionRebuildCount += 1
+        historySections = HistorySectionBuilder.sections(from: records, calendar: calendar)
     }
 
     func updateHotkeyDisplay(_ display: String) {
         currentHotkeyDisplay = display
     }
 
+    // MARK: - Migration
+
+    private func checkMigration() {
+        guard screenshotStore.resolver.hasOldPathData && !screenshotStore.resolver.hasMigrationBeenShown else { return }
+        screenshotStore.resolver.markMigrationShown()
+
+        guard let oldPath = screenshotStore.resolver.oldPathString else { return }
+        let oldURL = URL(fileURLWithPath: oldPath)
+        let exists = FileManager.default.fileExists(atPath: oldPath)
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
+            guard let self else { return }
+
+            let alert = NSAlert()
+            alert.messageText = "Screenshot Folder Access Updated"
+            if exists {
+                alert.informativeText = "Your previous screenshot folder was \"\(oldPath)\".\n\nTo keep saving screenshots to this location, please confirm it in the folder selection dialog."
+            } else {
+                alert.informativeText = "Your previous screenshot folder \"\(oldPath)\" was not found.\n\nPlease choose a new folder to save screenshots."
+            }
+            alert.alertStyle = .informational
+            alert.addButton(withTitle: "Select Folder")
+            alert.addButton(withTitle: "Cancel")
+            NSApp.activate(ignoringOtherApps: true)
+
+            if alert.runModal() == .alertFirstButtonReturn {
+                let panel = NSOpenPanel()
+                panel.canChooseFiles = false
+                panel.canChooseDirectories = true
+                panel.allowsMultipleSelection = false
+                panel.canCreateDirectories = true
+                panel.prompt = "Choose"
+                panel.message = "Choose a folder to save screenshots."
+                if exists {
+                    panel.directoryURL = oldURL
+                } else {
+                    let pictures = FileManager.default.urls(for: .picturesDirectory, in: .userDomainMask).first
+                    panel.directoryURL = pictures
+                }
+
+                if panel.runModal() == .OK, let url = panel.url {
+                    do {
+                        try self.screenshotStore.resolver.saveBookmark(for: url)
+                        self.screenshotStore.resolver.clearOldPathData()
+                        self.screenshotStore.restartWatchingScreenshotFolder()
+                        self.objectWillChange.send()
+                    } catch {
+                        self.showError(error.localizedDescription)
+                    }
+                }
+            } else {
+                self.screenshotStore.resolver.clearOldPathData()
+            }
+        }
+    }
+
+    private func checkStorageReady() {
+        if !screenshotStore.resolver.hasValidFolder {
+            showError("Please select a screenshot folder in Settings before capturing.")
+        }
+    }
+
     private func copyScreenshotAsync(at url: URL) async {
+        guard screenshotStore.resolver.securityAccess.startAccessing(url.deletingLastPathComponent()) else {
+            showError("Could not copy — file access denied.")
+            return
+        }
+
         guard let data = await Self.loadImageDataFromDisk(at: url) else {
             showError("Could not copy — file not found or unreadable.")
             return

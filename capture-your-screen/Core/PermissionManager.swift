@@ -5,10 +5,15 @@ import CoreGraphics
 /// Tracks Screen Recording permission state. Must be a class (not struct) because
 /// it is stored as a `let` in CaptureCoordinator and needs shared mutability.
 final class PermissionManager {
-    /// Tracks whether CGRequestScreenCaptureAccess() has ever been called.
-    /// CGPreflightScreenCaptureAccess() returns false for both "never asked" and "denied",
-    /// so we need this flag to distinguish the two states.
-    private var hasRequestedAccess: Bool = false
+    private static let hasRequestedAccessKey = "PermissionManager.hasRequestedScreenRecordingAccess"
+
+    /// Tracks whether we have already prompted / requested Screen Recording access.
+    /// `CGPreflightScreenCaptureAccess()` returns false for both "never asked" and "denied",
+    /// so we need this flag to distinguish the two states across launches.
+    private var hasRequestedAccess: Bool {
+        get { UserDefaults.standard.bool(forKey: Self.hasRequestedAccessKey) }
+        set { UserDefaults.standard.set(newValue, forKey: Self.hasRequestedAccessKey) }
+    }
 
     /// Check Screen Recording permission synchronously.
     /// - `.granted`: CGPreflight returns true
@@ -21,8 +26,18 @@ final class PermissionManager {
         return hasRequestedAccess ? .denied : .notDetermined
     }
 
+    /// Re-evaluate TCC state. Call after returning from System Settings or when the app becomes active.
+    @discardableResult
+    func refresh() -> PermissionStatus {
+        screenRecordingStatus
+    }
+
     /// Request Screen Recording permission. Shows the system prompt if not yet determined.
     /// Returns true if permission is now granted.
+    ///
+    /// Note: On macOS, enabling Screen Recording in System Settings often does not take
+    /// effect for the *currently running* process. A full quit + relaunch may still be required
+    /// even when the toggle is already ON.
     @discardableResult
     func requestScreenRecordingAccess() -> Bool {
         hasRequestedAccess = true
@@ -44,7 +59,10 @@ final class PermissionManager {
         alert.messageText = "Screen Recording Permission Required"
         alert.informativeText =
             "Capture Your Screen needs Screen Recording permission to capture your screen.\n\n" +
-            "Please go to System Settings → Privacy & Security → Screen Recording and enable this app."
+            "1. Open System Settings → Privacy & Security → Screen Recording\n" +
+            "2. Enable “capture-your-screen” (or “Capture Your Screen”)\n" +
+            "3. Fully quit this app from the menu bar, then open it again\n\n" +
+            "macOS only applies Screen Recording permission after a restart of the app."
         alert.alertStyle = .warning
         alert.addButton(withTitle: "Open System Settings")
         alert.addButton(withTitle: "Cancel")
@@ -54,9 +72,8 @@ final class PermissionManager {
     }
 }
 
-enum PermissionStatus {
+enum PermissionStatus: Equatable {
     case granted
     case denied
     case notDetermined
 }
-

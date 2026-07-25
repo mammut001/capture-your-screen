@@ -4,8 +4,6 @@ import AppKit
 import SwiftUI
 import UserNotifications
 
-/// State machine that drives the full capture flow:
-/// idle → capturing (overlay shown) → confirmed/cancelled → idle
 @MainActor
 final class CaptureCoordinator: ObservableObject {
     enum CaptureState {
@@ -18,8 +16,7 @@ final class CaptureCoordinator: ObservableObject {
 
     @Published private(set) var state: CaptureState = .idle
     @Published var lastError: Error?
-    /// Exposed so MenuBarViewModel can observe permission state.
-    var permissionStatus: PermissionStatus { permissionManager.screenRecordingStatus }
+    @Published private(set) var permissionStatus: PermissionStatus = .notDetermined
 
     private var overlayWindow: OverlayWindow?
     private var annotationWindow: AnnotationEditorWindow?
@@ -30,6 +27,17 @@ final class CaptureCoordinator: ObservableObject {
     init(screenshotStore: ScreenshotStore, hotkeyManager: HotkeyManager) {
         self.screenshotStore = screenshotStore
         self.hotkeyManager = hotkeyManager
+        self.permissionStatus = permissionManager.screenRecordingStatus
+    }
+
+    /// Re-check TCC Screen Recording state (e.g. after returning from System Settings).
+    @discardableResult
+    func refreshPermissionStatus() -> PermissionStatus {
+        let status = permissionManager.refresh()
+        if permissionStatus != status {
+            permissionStatus = status
+        }
+        return status
     }
 
     // MARK: - Public API
@@ -38,12 +46,16 @@ final class CaptureCoordinator: ObservableObject {
         guard case .idle = state else { return }
         lastError = nil
 
-        // If not yet granted, trigger the system permission dialog first.
-        // This makes the app appear in System Settings → Screen Recording.
-        if permissionManager.screenRecordingStatus != .granted {
+        guard screenshotStore.resolver.hasValidFolder else {
+            lastError = StorageError.folderNotSelected
+            return
+        }
+
+        var status = refreshPermissionStatus()
+        if status != .granted {
             _ = permissionManager.requestScreenRecordingAccess()
-            // Re-check: if still not granted (user denied), show guidance alert
-            if permissionManager.screenRecordingStatus != .granted {
+            status = refreshPermissionStatus()
+            if status != .granted {
                 permissionManager.showPermissionAlert()
                 return
             }
@@ -78,8 +90,6 @@ final class CaptureCoordinator: ObservableObject {
     }
 
     func cancelCapture() {
-        // Guard against re-entrant calls (e.g. Esc pressed twice, or
-        // event monitor firing after state already changed → EXC_BAD_ACCESS)
         guard case .capturing = state else { return }
         state = .idle
         overlayWindow?.close()
@@ -89,17 +99,12 @@ final class CaptureCoordinator: ObservableObject {
     // MARK: - Private
 
     private func finishCapture(selectionRect: CGRect, screen: NSScreen) {
-        // Guard against re-entrant calls (e.g. Enter pressed while already capturing)
         guard case .capturing = state else { return }
         state = .confirmed
-        // Hide the overlay first so it doesn't appear in the screenshot
         overlayWindow?.close()
         overlayWindow = nil
 
-        // SelectionOverlayView emits coordinates in the overlay's local space.
-        // Once the display is fixed, ScreenCaptureKit expects the rect within that display.
         let captureRect = selectionRect.integral
-
         performCapture(rect: captureRect, screen: screen)
     }
 
@@ -120,7 +125,6 @@ final class CaptureCoordinator: ObservableObject {
         }
     }
 
-    /// Bypass the annotation editor and save directly to disk.
     private func quickSaveCapture(selectionRect: CGRect, screen: NSScreen) {
         guard case .capturing = state else { return }
         state = .confirmed
@@ -132,12 +136,10 @@ final class CaptureCoordinator: ObservableObject {
                 let image = try await ScreenCapture.captureRegion(selectionRect.integral, displayID: screen.displayID)
                 lastError = nil
 
-                // Write to clipboard
                 let pb = NSPasteboard.general
                 pb.clearContents()
                 pb.writeObjects([image])
 
-                // Save to disk
                 let record = try await screenshotStore.save(image)
                 print("CaptureCoordinator: Quick-saved as \(record.url.path)")
                 showNotification(title: "Screenshot Captured", body: "Saved to \(record.url.lastPathComponent)")

@@ -28,12 +28,32 @@
 		A1B2C3C62F801E7800857E01 /* HelperJSON.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HelperJSON.swift; sourceTree = "<group>"; };
 		A1B2C3C72F801E7800857E01 /* HelperRunner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HelperRunner.swift; sourceTree = "<group>"; };
 		A1B2C3C82F801E7800857E01 /* CLIArgumentsSelfTest.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CLIArgumentsSelfTest.swift; sourceTree = "<group>"; };
+		A1B2C3F42F801E7800857E91 /* capture-your-screenTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "capture-your-screenTests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
+
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		A1B2C3G12F801E7800857E01 /* Exceptions for "capture-your-screen" folder in "capture-your-screen" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+				"capture-your-screen.entitlements",
+			);
+			target = 9F759A532F801E7800857E89 /* capture-your-screen */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		9F759A562F801E7800857E89 /* capture-your-screen */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				A1B2C3G12F801E7800857E01 /* Exceptions for "capture-your-screen" folder in "capture-your-screen" target */,
+			);
 			path = "capture-your-screen";
+			sourceTree = "<group>";
+		};
+		A1B2C3F72F801E7800857E91 /* capture-your-screenTests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = "capture-your-screenTests";
 			sourceTree = "<group>";
 		};
 /* End PBXFileSystemSynchronizedRootGroup section */
@@ -53,6 +73,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		A1B2C3F62F801E7800857E91 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -60,6 +87,7 @@
 			isa = PBXGroup;
 			children = (
 				9F759A562F801E7800857E89 /* capture-your-screen */,
+				A1B2C3F72F801E7800857E91 /* capture-your-screenTests */,
 				A1B2C3E12F801E7800857E01 /* capture-screen-helper */,
 				A1B2C3E22F801E7800857E01 /* SharedCaptureSources */,
 				9F759A552F801E7800857E89 /* Products */,
@@ -71,6 +99,7 @@
 			children = (
 				9F759A542F801E7800857E89 /* capture-your-screen.app */,
 				A1B2C3B12F801E7800857E01 /* capture-screen-helper */,
+				A1B2C3F42F801E7800857E91 /* capture-your-screenTests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -140,6 +169,28 @@
 			productReference = A1B2C3B12F801E7800857E01 /* capture-screen-helper */;
 			productType = "com.apple.product-type.tool";
 		};
+		A1B2C3F02F801E7800857E91 /* capture-your-screenTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A1B2C3F12F801E7800857E91 /* Build configuration list for PBXNativeTarget "capture-your-screenTests" */;
+			buildPhases = (
+				A1B2C3F52F801E7800857E91 /* Sources */,
+				A1B2C3F62F801E7800857E91 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				A1B2C3FB2F801E7800857E91 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				A1B2C3F72F801E7800857E91 /* capture-your-screenTests */,
+			);
+			name = "capture-your-screenTests";
+			packageProductDependencies = (
+			);
+			productName = "capture-your-screenTests";
+			productReference = A1B2C3F42F801E7800857E91 /* capture-your-screenTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -154,6 +205,9 @@
 						CreatedOnToolsVersion = 26.3;
 					};
 					A1B2C3A12F801E7800857E01 = {
+						CreatedOnToolsVersion = 26.3;
+					};
+					A1B2C3F02F801E7800857E91 = {
 						CreatedOnToolsVersion = 26.3;
 					};
 				};
@@ -174,9 +228,28 @@
 			targets = (
 				9F759A532F801E7800857E89 /* capture-your-screen */,
 				A1B2C3A12F801E7800857E01 /* capture-screen-helper */,
+				A1B2C3F02F801E7800857E91 /* capture-your-screenTests */,
 			);
 		};
 /* End PBXProject section */
+
+/* Begin PBXContainerItemProxy section */
+		A1B2C3FC2F801E7800857E91 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 9F759A4C2F801E7800857E89 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 9F759A532F801E7800857E89 /* capture-your-screen */;
+			remoteInfo = "capture-your-screen";
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXTargetDependency section */
+		A1B2C3FB2F801E7800857E91 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 9F759A532F801E7800857E89 /* capture-your-screen */;
+			targetProxy = A1B2C3FC2F801E7800857E91 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
 
 /* Begin PBXResourcesBuildPhase section */
 		9F759A522F801E7800857E89 /* Resources */ = {
@@ -208,6 +281,13 @@
 				A1B2C3D12F801E7800857E01 /* ScreenCapture.swift in capture-screen-helper */,
 				A1B2C3D22F801E7800857E01 /* PermissionManager.swift in capture-screen-helper */,
 				A1B2C3D32F801E7800857E01 /* ScreenshotEncoding.swift in capture-screen-helper */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A1B2C3F52F801E7800857E91 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -343,12 +423,16 @@
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = Z5D5N7CU6L;
-				ENABLE_APP_SANDBOX = NO;
+				DEFINES_MODULE = YES;
+				ENABLE_APP_SANDBOX = YES;
+				CODE_SIGN_ENTITLEMENTS = "capture-your-screen/capture-your-screen.entitlements";
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "capture-your-screen/Info.plist";
 				INFOPLIST_KEY_LSUIElement = YES;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				INFOPLIST_KEY_NSScreenCaptureUsageDescription = "Capture Your Screen needs permission to capture your screen when you use the screenshot hotkey.";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
@@ -374,12 +458,16 @@
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = Z5D5N7CU6L;
-				ENABLE_APP_SANDBOX = NO;
+				DEFINES_MODULE = YES;
+				ENABLE_APP_SANDBOX = YES;
+				CODE_SIGN_ENTITLEMENTS = "capture-your-screen/capture-your-screen.entitlements";
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "capture-your-screen/Info.plist";
 				INFOPLIST_KEY_LSUIElement = YES;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				INFOPLIST_KEY_NSScreenCaptureUsageDescription = "Capture Your Screen needs permission to capture your screen when you use the screenshot hotkey.";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
@@ -430,6 +518,44 @@
 			};
 			name = Release;
 		};
+		A1B2C3F22F801E7800857E91 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = Z5D5N7CU6L;
+				GENERATE_INFOPLIST_FILE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "doge.capture-your-screenTests";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_VERSION = 5.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/capture-your-screen.app/Contents/MacOS/capture-your-screen";
+			};
+			name = Debug;
+		};
+		A1B2C3F32F801E7800857E91 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = Z5D5N7CU6L;
+				GENERATE_INFOPLIST_FILE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "doge.capture-your-screenTests";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_VERSION = 5.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/capture-your-screen.app/Contents/MacOS/capture-your-screen";
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -456,6 +582,15 @@
 			buildConfigurations = (
 				A1B2C3B32F801E7800857E01 /* Debug */,
 				A1B2C3B42F801E7800857E01 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		A1B2C3F12F801E7800857E91 /* Build configuration list for PBXNativeTarget "capture-your-screenTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A1B2C3F22F801E7800857E91 /* Debug */,
+				A1B2C3F32F801E7800857E91 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

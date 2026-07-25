@@ -77,6 +77,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
 
         Task { @MainActor [weak self] in
             self?.screenshotStore.startWatchingScreenshotFolder()
+            self?.viewModel.refreshPermissionStatus()
         }
 
         hotkeyActivity = ProcessInfo.processInfo.beginActivity(
@@ -86,6 +87,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         hotkeyManager.ensureRegistered()
 
         askLaunchAtLoginIfNeeded()
+    }
+
+    func applicationDidBecomeActive(_ notification: Notification) {
+        // Screen Recording TCC can change while System Settings is open; re-check on focus.
+        Task { @MainActor [weak self] in
+            self?.viewModel.refreshPermissionStatus()
+        }
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {

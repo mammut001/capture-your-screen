@@ -30,7 +30,10 @@ struct MenuBarView: View {
             )
         )
         .task { await viewModel.refreshIfNeeded() }
-        .onAppear { hotkeyManager.ensureRegistered() }
+        .onAppear {
+            hotkeyManager.ensureRegistered()
+            viewModel.refreshPermissionStatus()
+        }
         .overlay(alignment: .bottom) {
             VStack(spacing: 6) {
                 if viewModel.showCopyToast {
@@ -131,6 +134,7 @@ struct MenuBarView: View {
                     .transition(.move(edge: .top).combined(with: .opacity))
             }
 
+
             if showingDatePicker {
                 datePickerCard
                     .transition(
@@ -218,7 +222,7 @@ struct MenuBarView: View {
                 .font(.system(size: 14))
                 .foregroundColor(.orange)
 
-            Text("Screen Recording permission is required to capture your screen.")
+            Text("Enable Screen Recording for this app, then fully quit and reopen it.")
                 .font(.caption)
                 .foregroundColor(.primary)
 
@@ -373,10 +377,10 @@ struct MenuBarView: View {
             previewBackground
 
             Group {
-                if let thumb = item.thumbnail {
+                if let thumb = viewModel.thumbnail(for: item) {
                     Image(nsImage: thumb)
                         .resizable()
-                        .interpolation(.high)
+                        .interpolation(.medium)
                         .scaledToFit()
                         .padding(10)
                 } else {
@@ -994,11 +998,11 @@ struct SettingsView: View {
                     .padding(.vertical, 4)
 
                     HStack(spacing: 4) {
-                        Text("Default: ~/Pictures/Screenshots")
+                        Text("Suggested: ~/Pictures/Screenshots")
                             .font(.caption2)
                             .foregroundColor(.secondary)
                         Spacer()
-                        Button("Reset to Default") {
+                        Button("Choose Default Folder\u{2026}") {
                             viewModel.resetToDefaultFolder()
                         }
                         .font(.caption2)
