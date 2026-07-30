@@ -138,6 +138,7 @@ protocol BookmarkStorage {
     func saveBookmarkData(_ data: Data, forKey key: String)
     func removeBookmarkData(forKey key: String)
     func loadString(forKey key: String) -> String?
+    func saveString(_ string: String, forKey key: String)
     func removeObject(forKey key: String)
 }
 
@@ -157,6 +158,10 @@ extension UserDefaults: BookmarkStorage {
     func loadString(forKey key: String) -> String? {
         string(forKey: key)
     }
+
+    func saveString(_ string: String, forKey key: String) {
+        set(string, forKey: key)
+    }
 }
 
 // MARK: - Storage Resolver
@@ -164,6 +169,7 @@ extension UserDefaults: BookmarkStorage {
 @MainActor
 final class StorageResolver {
     static let bookmarkDefaultsKey = "screenshotFolderBookmark"
+    static let folderPathKey = "screenshotFolderPath"
     static let oldPathDefaultsKey = "customScreenshotFolder"
     static let migrationShownKey = "screenshotFolderMigrationShown"
 
@@ -196,7 +202,7 @@ final class StorageResolver {
         if cachedIsStale {
             reloadBookmark()
         }
-        return cachedResolvedURL != nil && !cachedIsStale
+        return cachedResolvedURL != nil
     }
 
     var screenshotFolderURL: URL? {
@@ -209,6 +215,7 @@ final class StorageResolver {
     func saveBookmark(for url: URL) throws {
         let data = try bookmarkProvider.createBookmarkData(from: url)
         defaults.saveBookmarkData(data, forKey: Self.bookmarkDefaultsKey)
+        defaults.saveString(url.path, forKey: Self.folderPathKey)
         defaults.removeObject(forKey: Self.oldPathDefaultsKey)
         cachedResolvedURL = url
         cachedIsStale = false
@@ -217,6 +224,7 @@ final class StorageResolver {
 
     func clearBookmark() {
         defaults.removeBookmarkData(forKey: Self.bookmarkDefaultsKey)
+        defaults.removeObject(forKey: Self.folderPathKey)
         cachedResolvedURL = nil
         cachedIsStale = false
         securityAccess.stopAll()
@@ -280,23 +288,59 @@ final class StorageResolver {
     // MARK: - Private
 
     private func loadBookmark() {
-        guard let data = defaults.loadBookmarkData(forKey: Self.bookmarkDefaultsKey) else {
-            cachedResolvedURL = nil
-            cachedIsStale = false
-            return
-        }
-        do {
-            let (url, isStale) = try bookmarkProvider.resolveBookmarkData(data)
-            cachedResolvedURL = url
-            cachedIsStale = isStale
-            if !isStale {
-                _ = securityAccess.startAccessing(url)
+        if let data = defaults.loadBookmarkData(forKey: Self.bookmarkDefaultsKey) {
+            do {
+                let (url, isStale) = try bookmarkProvider.resolveBookmarkData(data)
+                cachedResolvedURL = url
+                cachedIsStale = isStale
+                if !isStale {
+                    _ = securityAccess.startAccessing(url)
+                    defaults.saveString(url.path, forKey: Self.folderPathKey)
+                } else {
+                    if let newData = try? bookmarkProvider.createBookmarkData(from: url) {
+                        defaults.saveBookmarkData(newData, forKey: Self.bookmarkDefaultsKey)
+                        defaults.saveString(url.path, forKey: Self.folderPathKey)
+                    }
+                }
+                return
+            } catch {
+                defaults.removeBookmarkData(forKey: Self.bookmarkDefaultsKey)
             }
-        } catch {
-            cachedResolvedURL = nil
-            cachedIsStale = false
-            defaults.removeBookmarkData(forKey: Self.bookmarkDefaultsKey)
         }
+
+        // Fallback 1: Saved path from user settings
+        if let savedPath = defaults.loadString(forKey: Self.folderPathKey), !savedPath.isEmpty {
+            let expandedPath = (savedPath as NSString).expandingTildeInPath
+            let url = URL(fileURLWithPath: expandedPath)
+            if fileManager.fileExists(atPath: url.path) {
+                cachedResolvedURL = url
+                cachedIsStale = false
+                _ = securityAccess.startAccessing(url)
+                if let newData = try? bookmarkProvider.createBookmarkData(from: url) {
+                    defaults.saveBookmarkData(newData, forKey: Self.bookmarkDefaultsKey)
+                }
+                return
+            }
+        }
+
+        // Fallback 2: Old path key migration
+        if let oldPath = defaults.loadString(forKey: Self.oldPathDefaultsKey), !oldPath.isEmpty {
+            let expandedPath = (oldPath as NSString).expandingTildeInPath
+            let url = URL(fileURLWithPath: expandedPath)
+            if fileManager.fileExists(atPath: url.path) {
+                cachedResolvedURL = url
+                cachedIsStale = false
+                _ = securityAccess.startAccessing(url)
+                if let newData = try? bookmarkProvider.createBookmarkData(from: url) {
+                    defaults.saveBookmarkData(newData, forKey: Self.bookmarkDefaultsKey)
+                    defaults.saveString(url.path, forKey: Self.folderPathKey)
+                }
+                return
+            }
+        }
+
+        cachedResolvedURL = nil
+        cachedIsStale = false
     }
 
     private func reloadBookmark() {
@@ -338,6 +382,10 @@ final class MockBookmarkStorage: BookmarkStorage {
 
     func loadString(forKey key: String) -> String? {
         stringStore[key]
+    }
+
+    func saveString(_ string: String, forKey key: String) {
+        stringStore[key] = string
     }
 
     func removeObject(forKey key: String) {

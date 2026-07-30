@@ -76,6 +76,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         launchAtLoginManager.refreshStatus()
 
         Task { @MainActor [weak self] in
+            await self?.screenshotStore.refreshHistory()
             self?.screenshotStore.startWatchingScreenshotFolder()
             self?.viewModel.refreshPermissionStatus()
         }
