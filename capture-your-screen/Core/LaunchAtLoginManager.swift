@@ -8,12 +8,14 @@ final class LaunchAtLoginManager: ObservableObject {
     
     @Published var isEnabled: Bool = false {
         didSet {
-            // Only toggle if the state has actually changed and we're not just initializing.
+            guard !isUpdating else { return }
             if isEnabled != (SMAppService.mainApp.status == .enabled) {
                 toggleLaunchAtLogin()
             }
         }
     }
+
+    private var isUpdating = false
 
     init() {
         // Correctly set initial state based on system status.
@@ -21,6 +23,8 @@ final class LaunchAtLoginManager: ObservableObject {
     }
 
     private func toggleLaunchAtLogin() {
+        isUpdating = true
+        defer { isUpdating = false }
         do {
             if isEnabled {
                 try SMAppService.mainApp.register()

@@ -14,8 +14,5 @@
     <key>NSScreenCaptureUsageDescription</key>
     <string>Capture Your Screen needs permission to capture your screen when you use the screenshot hotkey.</string>
 
-    <!-- User Notifications -->
-    <key>NSUserNotificationUsageDescription</key>
-    <string>Capture Your Screen sends a brief notification after each screenshot is saved.</string>
 </dict>
 </plist>

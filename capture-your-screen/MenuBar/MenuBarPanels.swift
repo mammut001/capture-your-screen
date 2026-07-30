@@ -168,12 +168,24 @@ struct MenuBarView: View {
                 .background(panelCardBackground)
             } else {
                 ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 16) {
-                        ForEach(viewModel.historySections) { section in
-                            daySection(section)
+                    // Flat header + item rows: LazyVStack can recycle each card independently.
+                    LazyVStack(alignment: .leading, spacing: 10) {
+                        ForEach(viewModel.historyRows) { row in
+                            switch row {
+                            case .dayHeader(let date, let title, let subtitle, let count):
+                                dayHeaderRow(
+                                    date: date,
+                                    title: title,
+                                    subtitle: subtitle,
+                                    count: count
+                                )
+                            case .item(let item):
+                                historyCard(item: item)
+                            }
                         }
                     }
-                    .padding(4)
+                    .padding(.horizontal, 4)
+                    .padding(.vertical, 2)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
@@ -274,62 +286,64 @@ struct MenuBarView: View {
         }
     }
 
-    private func daySection(_ section: ScreenshotDaySection) -> some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 8) {
-                Button(action: { viewModel.copyLatestScreenshot(on: section.date) }) {
-                    Image(systemName: "doc.on.doc.fill")
-                        .foregroundColor(.accentColor)
+    /// Sticky-feeling day separator: title, relative label, count, quick actions.
+    private func dayHeaderRow(
+        date: Date,
+        title: String,
+        subtitle: String,
+        count: Int
+    ) -> some View {
+        HStack(spacing: 10) {
+            Button(action: { viewModel.copyLatestScreenshot(on: date) }) {
+                Image(systemName: "doc.on.doc.fill")
+                    .foregroundColor(.accentColor)
+            }
+            .buttonStyle(.plain)
+            .help("Copy latest screenshot for this date")
+
+            Button(action: {
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    viewModel.selectDate(date)
+                    viewModel.applySelectedDateFilter()
                 }
-                .buttonStyle(.plain)
-                .help("Copy latest screenshot for this date")
-
-                Button(action: {
-                    withAnimation(.easeInOut(duration: 0.2)) {
-                        viewModel.selectDate(section.date)
-                    }
-                }) {
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(section.title)
-                            .font(.subheadline.bold())
-                            .foregroundColor(.primary)
-                        Text(section.subtitle)
-                            .font(.caption2)
-                            .foregroundColor(.secondary)
-                    }
+            }) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title)
+                        .font(.subheadline.bold())
+                        .foregroundColor(.primary)
+                    Text(subtitle)
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
                 }
-                .buttonStyle(.plain)
-
-                Spacer()
-
-                Text("\(section.items.count)")
-                    .font(.caption.bold())
-                    .foregroundColor(.secondary)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background(Color.secondary.opacity(0.12), in: Capsule())
             }
-            .padding(.horizontal, 16)
-            .padding(.top, 16)
-            .padding(.bottom, 10)
+            .buttonStyle(.plain)
+            .help("Focus this day")
 
-            ForEach(section.items.prefix(4)) { item in
-                historyCard(item: item)
-                    .padding(.horizontal, 16)
-            }
-            if section.items.count > 4 {
-                Text("+ \(section.items.count - 4) more on this day")
-                    .font(.caption2)
-                    .foregroundColor(.secondary)
-                    .padding(.horizontal, 16)
-                    .padding(.bottom, 14)
-            }
+            Spacer()
+
+            Text("\(count)")
+                .font(.caption.bold().monospacedDigit())
+                .foregroundColor(.secondary)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(Color.secondary.opacity(0.12), in: Capsule())
         }
-        .background(panelCardBackground)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(Color(NSColor.controlBackgroundColor).opacity(0.96))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .stroke(Color.accentColor.opacity(0.18), lineWidth: 1)
+                )
+        )
+        .padding(.top, 6)
     }
 
     private func historyCard(item: ScreenshotHistoryItem) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 8) {
             Button(action: { viewModel.copyScreenshot(item) }) {
                 historyPreview(item)
             }
@@ -337,7 +351,7 @@ struct MenuBarView: View {
 
             HStack(spacing: 10) {
                 Text(item.displayTime)
-                    .font(.headline.monospacedDigit())
+                    .font(.subheadline.monospacedDigit().weight(.semibold))
                     .foregroundColor(.primary)
 
                 Spacer()
@@ -355,11 +369,11 @@ struct MenuBarView: View {
                 .controlSize(.small)
             }
         }
-        .padding(12)
+        .padding(10)
         .background(
-            RoundedRectangle(cornerRadius: 18)
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
                 .fill(Color(NSColor.windowBackgroundColor))
-                .shadow(color: Color.black.opacity(0.08), radius: 10, y: 4)
+                .shadow(color: Color.black.opacity(0.04), radius: 3, y: 1)
         )
         .contextMenu {
             Button("Copy") { viewModel.copyScreenshot(item) }
@@ -367,6 +381,8 @@ struct MenuBarView: View {
             Divider()
             Button("Delete", role: .destructive) { viewModel.deleteScreenshot(item) }
         }
+        // Stable estimated height helps LazyVStack scroll without jumping.
+        .frame(maxWidth: .infinity, alignment: .leading)
         .onAppear {
             viewModel.loadThumbnailIfNeeded(for: item)
         }
@@ -374,86 +390,61 @@ struct MenuBarView: View {
 
     private func historyPreview(_ item: ScreenshotHistoryItem) -> some View {
         ZStack(alignment: .bottomLeading) {
-            previewBackground
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(Color(nsColor: .controlBackgroundColor))
 
             Group {
                 if let thumb = viewModel.thumbnail(for: item) {
                     Image(nsImage: thumb)
                         .resizable()
-                        .interpolation(.medium)
+                        .interpolation(.low)
                         .scaledToFit()
-                        .padding(10)
+                        .padding(8)
                 } else {
-                    VStack(spacing: 8) {
+                    VStack(spacing: 6) {
                         ProgressView()
                             .controlSize(.small)
-
-                        Label("Loading Preview", systemImage: "photo")
+                        Text("Loading")
                             .font(.caption2.weight(.semibold))
                             .foregroundColor(.secondary)
                     }
-                    .padding(12)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
 
             HStack {
-                Label("Tap Preview To Copy", systemImage: "doc.on.doc")
-                    .font(.caption.bold())
-                    .foregroundColor(.white)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 6)
-                    .background(Color.black.opacity(0.72), in: Capsule())
-
-                Spacer()
-
                 Text(item.displayTime)
-                    .font(.caption.bold())
+                    .font(.caption2.bold())
                     .foregroundColor(.white)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 6)
-                    .background(Color.black.opacity(0.72), in: Capsule())
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(Color.black.opacity(0.65), in: Capsule())
+                Spacer()
             }
-            .padding(12)
+            .padding(8)
         }
-        .frame(maxWidth: .infinity, minHeight: 220, maxHeight: 250)
-        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        // Fixed height keeps lazy list metrics stable while scrolling.
+        .frame(maxWidth: .infinity)
+        .frame(height: 180)
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         .overlay(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .stroke(Color.black.opacity(0.08), lineWidth: 1)
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(Color.black.opacity(0.06), lineWidth: 1)
         )
-    }
-
-    private var previewBackground: some View {
-        ZStack {
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(Color(nsColor: .controlBackgroundColor))
-
-            CheckerboardPreviewBackground()
-                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(
-                    LinearGradient(
-                        colors: [
-                            Color.white.opacity(0.10),
-                            Color.clear
-                        ],
-                        startPoint: .top,
-                        endPoint: .bottom
-                    )
-                )
-        }
     }
 
     private var historyIsEmpty: Bool {
         viewModel.historySections.isEmpty
     }
 
+    private static let mediumDateFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateStyle = .medium
+        return f
+    }()
+
     private func formattedDate(_ date: Date) -> String {
-        let formatter = DateFormatter()
-        formatter.dateStyle = .medium
-        return formatter.string(from: date)
+        Self.mediumDateFormatter.string(from: date)
     }
 
     private var headerSubtitle: String {
@@ -610,41 +601,16 @@ struct MenuBarView: View {
     }
 }
 
-private struct CheckerboardPreviewBackground: View {
-    private let tileSize: CGFloat = 14
-    private let lightTile = Color.secondary.opacity(0.05)
-    private let darkTile = Color.secondary.opacity(0.10)
-
-    var body: some View {
-        GeometryReader { proxy in
-            let columns = max(Int(ceil(proxy.size.width / tileSize)), 1)
-            let rows = max(Int(ceil(proxy.size.height / tileSize)), 1)
-
-            VStack(spacing: 0) {
-                ForEach(0..<rows, id: \.self) { row in
-                    HStack(spacing: 0) {
-                        ForEach(0..<columns, id: \.self) { column in
-                            Rectangle()
-                                .fill((row + column).isMultiple(of: 2) ? lightTile : darkTile)
-                        }
-                    }
-                }
-            }
-        }
-        .allowsHitTesting(false)
-    }
-}
-
 private struct CompactCalendarView: View {
     @Binding var visibleMonth: Date
     @Binding var selectedDate: Date
-    let datesWithScreenshots: Set<Date>
+    let datesWithScreenshots: [Date: Int]
     @GestureState private var dragTranslation: CGFloat = 0
 
     private let calendar = Calendar.current
     private let weekdays = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
 
-    init(visibleMonth: Binding<Date>, selectedDate: Binding<Date>, datesWithScreenshots: Set<Date>) {
+    init(visibleMonth: Binding<Date>, selectedDate: Binding<Date>, datesWithScreenshots: [Date: Int]) {
         _visibleMonth = visibleMonth
         _selectedDate = selectedDate
         self.datesWithScreenshots = datesWithScreenshots
@@ -686,27 +652,29 @@ private struct CompactCalendarView: View {
                 }
 
                 ForEach(monthCells) { cell in
-                    Button(action: { selectedDate = cell.date }) {
-                        ZStack {
-                            Circle()
-                                .fill(isSelected(cell.date) ? Color.accentColor : Color.clear)
-                                .frame(width: 32, height: 32)
+                    ZStack {
+                        Circle()
+                            .fill(isSelected(cell.date) ? Color.accentColor : Color.clear)
+                            .frame(width: 40, height: 40)
 
-                            Text("\(calendar.component(.day, from: cell.date))")
-                                .font(.system(size: 15, weight: isSelected(cell.date) ? .bold : .medium))
-                                .foregroundColor(textColor(for: cell.date, isCurrentMonth: cell.isCurrentMonth))
+                        Text("\(calendar.component(.day, from: cell.date))")
+                            .font(.system(size: 15, weight: isSelected(cell.date) ? .bold : .medium))
+                            .foregroundColor(textColor(for: cell.date, isCurrentMonth: cell.isCurrentMonth))
 
-                            Circle()
-                                .fill(Color.green)
-                                .frame(width: 4, height: 4)
-                                .opacity(showsScreenshotDot(for: cell.date, isCurrentMonth: cell.isCurrentMonth) ? 1 : 0)
-                                .offset(y: 10)
+                        if let count = screenshotCount(for: cell.date, isCurrentMonth: cell.isCurrentMonth) {
+                            Text(count > 99 ? "99+" : "\(count)")
+                                .font(.system(size: 8, weight: .bold, design: .rounded))
+                                .foregroundColor(.white)
+                                .padding(.horizontal, 3)
+                                .padding(.vertical, 1)
+                                .background(Capsule().fill(Color.green))
+                                .offset(y: 14)
                         }
-                        .frame(width: 36, height: 36)
                     }
-                    .buttonStyle(.plain)
-                    .disabled(cell.date > Date())
+                    .frame(width: 42, height: 42)
                     .contentShape(Rectangle())
+                    .onTapGesture { selectedDate = cell.date }
+                    .opacity(cell.date > Date() ? 0.3 : 1)
                     .frame(maxWidth: .infinity)
                 }
             }
@@ -740,10 +708,14 @@ private struct CompactCalendarView: View {
         }
     }
 
+    private static let monthFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "MMMM yyyy"
+        return f
+    }()
+
     private var monthTitle: String {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "MMMM yyyy"
-        return formatter.string(from: visibleMonth)
+        Self.monthFormatter.string(from: visibleMonth)
     }
 
     private var monthTitleView: some View {
@@ -811,11 +783,6 @@ private struct CompactCalendarView: View {
         calendar.isDate(date, inSameDayAs: selectedDate)
     }
 
-    private func selectionBackground(for date: Date) -> some View {
-        Circle()
-            .fill(isSelected(date) ? Color.accentColor : Color.clear)
-    }
-
     private func textColor(for date: Date, isCurrentMonth: Bool) -> Color {
         if date > Date() {
             return .secondary.opacity(0.28)
@@ -826,9 +793,10 @@ private struct CompactCalendarView: View {
         return isCurrentMonth ? .primary : .secondary.opacity(0.5)
     }
 
-    private func showsScreenshotDot(for date: Date, isCurrentMonth: Bool) -> Bool {
-        guard isCurrentMonth, date <= Date() else { return false }
-        return datesWithScreenshots.contains(calendar.startOfDay(for: date))
+    private func screenshotCount(for date: Date, isCurrentMonth: Bool) -> Int? {
+        guard isCurrentMonth, date <= Date() else { return nil }
+        let count = datesWithScreenshots[calendar.startOfDay(for: date)] ?? 0
+        return count > 0 ? count : nil
     }
 }
 
@@ -874,13 +842,12 @@ private final class SwipeCaptureView: NSView {
         fatalError("init(coder:) has not been implemented")
     }
 
-    override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
-        false
-    }
-
-    override func hitTest(_ point: NSPoint) -> NSView? {
-        nil
-    }
+    // Forward mouse events so clicks/taps pass through to SwiftUI views below
+    override func mouseDown(with event: NSEvent) { nextResponder?.mouseDown(with: event) }
+    override func mouseUp(with event: NSEvent) { nextResponder?.mouseUp(with: event) }
+    override func mouseDragged(with event: NSEvent) { nextResponder?.mouseDragged(with: event) }
+    override func mouseMoved(with event: NSEvent) { nextResponder?.mouseMoved(with: event) }
+    override func rightMouseDown(with event: NSEvent) { nextResponder?.rightMouseDown(with: event) }
 
     override func scrollWheel(with event: NSEvent) {
         let deltaX = event.scrollingDeltaX

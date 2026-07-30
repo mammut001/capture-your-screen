@@ -87,35 +87,47 @@ struct RealBookmarkProvider: BookmarkProvider {
 
 // MARK: - Security-Scoped Access Lifecycle
 
+@MainActor
 final class SecurityScopedAccess {
-    private var securedURL: URL?
-    private var isActive = false
+    private var activeURLs: [URL: Int] = [:]  // URL -> reference count
 
     func startAccessing(_ url: URL) -> Bool {
-        if isActive && securedURL == url {
+        if let count = activeURLs[url] {
+            activeURLs[url] = count + 1
             return true
         }
-        stopAccessing()
         guard url.startAccessingSecurityScopedResource() else {
             return false
         }
-        securedURL = url
-        isActive = true
+        activeURLs[url] = 1
         return true
     }
 
-    func stopAccessing() {
-        guard isActive, let url = securedURL else { return }
-        url.stopAccessingSecurityScopedResource()
-        securedURL = nil
-        isActive = false
+    func stopAccessing(_ url: URL) {
+        guard let count = activeURLs[url] else { return }
+        if count <= 1 {
+            url.stopAccessingSecurityScopedResource()
+            activeURLs.removeValue(forKey: url)
+        } else {
+            activeURLs[url] = count - 1
+        }
     }
 
-    var accessingURL: URL? { securedURL }
-    var isAccessing: Bool { isActive }
+    func stopAll() {
+        for (url, _) in activeURLs {
+            url.stopAccessingSecurityScopedResource()
+        }
+        activeURLs.removeAll()
+    }
+
+    var isAccessing: Bool { !activeURLs.isEmpty }
 
     deinit {
-        stopAccessing()
+        // Inline cleanup — deinit is nonisolated and cannot call @MainActor methods.
+        for (url, _) in activeURLs {
+            url.stopAccessingSecurityScopedResource()
+        }
+        activeURLs.removeAll()
     }
 }
 
@@ -149,6 +161,7 @@ extension UserDefaults: BookmarkStorage {
 
 // MARK: - Storage Resolver
 
+@MainActor
 final class StorageResolver {
     static let bookmarkDefaultsKey = "screenshotFolderBookmark"
     static let oldPathDefaultsKey = "customScreenshotFolder"
@@ -167,12 +180,12 @@ final class StorageResolver {
     init(
         defaults: BookmarkStorage = UserDefaults.standard,
         bookmarkProvider: BookmarkProvider = RealBookmarkProvider(),
-        securityAccess: SecurityScopedAccess = SecurityScopedAccess(),
+        securityAccess: SecurityScopedAccess? = nil,
         fileManager: FileManager = .default
     ) {
         self.defaults = defaults
         self.bookmarkProvider = bookmarkProvider
-        self.securityAccess = securityAccess
+        self.securityAccess = securityAccess ?? SecurityScopedAccess()
         self.fileManager = fileManager
         loadBookmark()
     }
@@ -206,7 +219,7 @@ final class StorageResolver {
         defaults.removeBookmarkData(forKey: Self.bookmarkDefaultsKey)
         cachedResolvedURL = nil
         cachedIsStale = false
-        securityAccess.stopAccessing()
+        securityAccess.stopAll()
     }
 
     func prepareFolder() throws -> URL {
@@ -253,7 +266,7 @@ final class StorageResolver {
     }
 
     var hasMigrationBeenShown: Bool {
-        defaults.loadString(forKey: Self.migrationShownKey) != nil
+        defaults.loadBookmarkData(forKey: Self.migrationShownKey) != nil
     }
 
     func markMigrationShown() {
@@ -293,6 +306,7 @@ final class StorageResolver {
 
 // MARK: - Mock Objects for Testing
 
+#if DEBUG
 final class MockBookmarkProvider: BookmarkProvider {
     var onCreate: ((URL) throws -> Data)?
     var onResolve: ((Data) throws -> (url: URL, isStale: Bool))?
@@ -331,3 +345,4 @@ final class MockBookmarkStorage: BookmarkStorage {
         stringStore.removeValue(forKey: key)
     }
 }
+#endif

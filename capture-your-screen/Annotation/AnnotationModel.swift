@@ -112,6 +112,7 @@ struct AnnotationItem: Identifiable, Equatable {
 
 /// Observable state of the annotation editor. Expected to be mutated from
 /// the main thread (SwiftUI).
+@MainActor
 final class AnnotationCanvas: ObservableObject {
     @Published var items: [AnnotationItem] = []
     @Published var selectedItemID: AnnotationID? = nil
@@ -130,6 +131,7 @@ final class AnnotationCanvas: ObservableObject {
 
     /// Take a snapshot of the current items. Call BEFORE mutating state.
     func snapshot() {
+        objectWillChange.send()
         undoStack.append(items)
         if undoStack.count > maxHistory {
             undoStack.removeFirst(undoStack.count - maxHistory)
@@ -142,6 +144,7 @@ final class AnnotationCanvas: ObservableObject {
 
     func undo() {
         guard let previous = undoStack.popLast() else { return }
+        objectWillChange.send()
         redoStack.append(items)
         items = previous
         selectedItemID = nil
@@ -149,6 +152,7 @@ final class AnnotationCanvas: ObservableObject {
 
     func redo() {
         guard let next = redoStack.popLast() else { return }
+        objectWillChange.send()
         undoStack.append(items)
         items = next
         selectedItemID = nil
@@ -206,6 +210,14 @@ final class AnnotationCanvas: ObservableObject {
 
     func clearSelection() {
         selectedItemID = nil
+    }
+
+    /// Remove the most recent undo snapshot without changing items.
+    /// Used when a just-added item is immediately discarded (e.g. zero-size creation).
+    func removeLastUndoSnapshot() {
+        if !undoStack.isEmpty {
+            undoStack.removeLast()
+        }
     }
 }
 

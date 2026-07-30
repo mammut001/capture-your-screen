@@ -1,6 +1,7 @@
 import Foundation
 import Darwin
 
+@MainActor
 final class FolderWatcher {
     private struct WatchRegistration {
         let url: URL
@@ -53,7 +54,11 @@ final class FolderWatcher {
     }
 
     deinit {
-        stop()
+        // Dispatch sources must be cancelled to release file descriptors.
+        // deinit is nonisolated, so cancel sources directly without touching MainActor state.
+        for registration in registrations {
+            registration.source.cancel()
+        }
     }
 
     private func watchedURLs(for rootURL: URL) -> [URL] {
@@ -86,7 +91,9 @@ final class FolderWatcher {
         )
 
         source.setEventHandler { [weak self] in
-            self?.onChange?()
+            Task { @MainActor in
+                self?.onChange?()
+            }
         }
 
         source.setCancelHandler {

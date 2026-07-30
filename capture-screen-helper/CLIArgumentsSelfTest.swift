@@ -1,5 +1,6 @@
 import Foundation
 
+#if DEBUG
 enum CLIArgumentsSelfTest {
     static func run() -> Bool {
         var failures: [String] = []
@@ -67,3 +68,4 @@ enum CLIArgumentsSelfTest {
         return false
     }
 }
+#endif

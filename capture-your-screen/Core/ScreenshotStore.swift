@@ -220,7 +220,7 @@ final class ScreenshotStore: ObservableObject {
             thumbnailsByID = [:]
             hasLoadedHistory = true
             folderWatcher.stop()
-            resolver.securityAccess.stopAccessing()
+            resolver.securityAccess.stopAll()
             return
         }
 
@@ -441,43 +441,44 @@ final class ScreenshotStore: ObservableObject {
     }
 
     nonisolated static func makeThumbnailStatic(from image: NSImage) -> NSImage {
-        let targetSize = NSSize(width: 420, height: 240)
+        let targetWidth = 420
+        let targetHeight = 240
+        let targetSize = NSSize(width: targetWidth, height: targetHeight)
         let fit = aspectFitRect(for: image.size, in: NSRect(origin: .zero, size: targetSize))
 
-        guard let rep = NSBitmapImageRep(
-            bitmapDataPlanes: nil,
-            pixelsWide: Int(targetSize.width),
-            pixelsHigh: Int(targetSize.height),
-            bitsPerSample: 8,
-            samplesPerPixel: 4,
-            hasAlpha: true,
-            isPlanar: false,
-            colorSpaceName: .deviceRGB,
-            bytesPerRow: 0,
-            bitsPerPixel: 0
+        guard let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
+            return image
+        }
+
+        guard let cgContext = CGContext(
+            data: nil,
+            width: targetWidth,
+            height: targetHeight,
+            bitsPerComponent: 8,
+            bytesPerRow: targetWidth * 4,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
         ) else {
             return image
         }
 
-        guard let context = NSGraphicsContext(bitmapImageRep: rep) else {
+        // Clear to transparent
+        cgContext.clear(CGRect(x: 0, y: 0, width: targetWidth, height: targetHeight))
+
+        // CoreGraphics origin is bottom-left; flip the fit rect vertically
+        let flippedRect = CGRect(
+            x: fit.origin.x,
+            y: CGFloat(targetHeight) - fit.origin.y - fit.height,
+            width: fit.width,
+            height: fit.height
+        )
+        cgContext.draw(cgImage, in: flippedRect)
+
+        guard let resultImage = cgContext.makeImage() else {
             return image
         }
 
-        NSGraphicsContext.saveGraphicsState()
-        NSGraphicsContext.current = context
-        NSColor.clear.set()
-        NSRect(origin: .zero, size: targetSize).fill()
-        image.draw(
-            in: fit,
-            from: .zero,
-            operation: .copy,
-            fraction: 1.0
-        )
-        NSGraphicsContext.restoreGraphicsState()
-
-        let thumb = NSImage(size: targetSize)
-        thumb.addRepresentation(rep)
-        return thumb
+        return NSImage(cgImage: resultImage, size: targetSize)
     }
 
     nonisolated private static func aspectFitRect(for sourceSize: NSSize, in bounds: NSRect) -> NSRect {

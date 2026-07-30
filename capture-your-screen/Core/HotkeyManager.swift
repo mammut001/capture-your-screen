@@ -15,19 +15,24 @@ struct HotkeyConfiguration: Codable, Equatable {
     )
 }
 
-// Top-level C-compatible callback — must not capture Swift context
+// Top-level C-compatible callback — must not capture Swift context.
+// Uses a static weak reference so it never dereferences a deallocated object.
 private func carbonHotkeyCallback(
     _ callRef: EventHandlerCallRef?,
     _ event: EventRef?,
     _ userData: UnsafeMutableRawPointer?
 ) -> OSStatus {
-    guard let userData else { return OSStatus(eventNotHandledErr) }
-    let manager = Unmanaged<HotkeyManager>.fromOpaque(userData).takeUnretainedValue()
+    guard let manager = HotkeyManager.callbackTarget else {
+        return OSStatus(eventNotHandledErr)
+    }
     DispatchQueue.main.async { manager.handleHotkeyPressed() }
     return noErr
 }
 
 final class HotkeyManager: ObservableObject {
+    /// Weak reference used by the C callback — never dangling.
+    fileprivate static weak var callbackTarget: HotkeyManager?
+
     @Published private(set) var currentConfig: HotkeyConfiguration
     /// Whether the manager is currently in hotkey-recording mode.
     @Published var isRecording: Bool = false
@@ -57,18 +62,19 @@ final class HotkeyManager: ObservableObject {
 
     /// Idempotent registration — safe to call whenever the app wakes up.
     func ensureRegistered() {
+        Self.callbackTarget = self
+
         if handlerRef == nil {
             var spec = EventTypeSpec(
                 eventClass: OSType(kEventClassKeyboard),
                 eventKind: UInt32(kEventHotKeyPressed)
             )
-            let selfPtr = Unmanaged.passUnretained(self).toOpaque()
             let status = InstallEventHandler(
                 GetApplicationEventTarget(),
                 carbonHotkeyCallback,
                 1,
                 &spec,
-                selfPtr,
+                nil,   // no raw pointer — callback uses the static weak reference
                 &handlerRef
             )
             if status != noErr {
@@ -126,6 +132,10 @@ final class HotkeyManager: ObservableObject {
 
     /// Begin recording: intercept all local keyDown events.
     func startRecording() {
+        if let existing = localMonitor {
+            NSEvent.removeMonitor(existing)
+            localMonitor = nil
+        }
         isRecording = true
         recordingPreviewConfig = nil
         localMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
@@ -193,6 +203,9 @@ final class HotkeyManager: ObservableObject {
     }
 
     deinit {
+        if Self.callbackTarget === self {
+            Self.callbackTarget = nil
+        }
         unregister()
         if let ref = handlerRef {
             RemoveEventHandler(ref)

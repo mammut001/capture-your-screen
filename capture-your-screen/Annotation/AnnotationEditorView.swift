@@ -15,9 +15,26 @@ struct AnnotationEditorView: View {
     let onSaveOriginal: () -> Void      // Save the untouched base image (skip annotations)
     let onCancel: () -> Void
 
+    /// Convenience init that creates a fresh AnnotationCanvas on the main actor.
+    @MainActor
     init(
         baseImage: NSImage,
-        canvas: AnnotationCanvas = AnnotationCanvas(),
+        onSave: @escaping (NSImage) -> Void,
+        onSaveOriginal: @escaping () -> Void,
+        onCancel: @escaping () -> Void
+    ) {
+        self.init(
+            baseImage: baseImage,
+            canvas: AnnotationCanvas(),
+            onSave: onSave,
+            onSaveOriginal: onSaveOriginal,
+            onCancel: onCancel
+        )
+    }
+
+    init(
+        baseImage: NSImage,
+        canvas: AnnotationCanvas,
         onSave: @escaping (NSImage) -> Void,
         onSaveOriginal: @escaping () -> Void,
         onCancel: @escaping () -> Void
@@ -131,13 +148,11 @@ struct AnnotationEditorView: View {
         isSaving = true
         let items = canvas.items
         let image = baseImage
-        // Composite off the main thread; the window is dismissed by onSave in CaptureCoordinator.
-        DispatchQueue.global(qos: .userInitiated).async {
-            let composed = AnnotationCompositor.composite(baseImage: image, annotations: items)
-            Task { @MainActor in
-                self.onSave(composed)
-            }
-        }
+        // Composite on the main thread — AnnotationCompositor uses AppKit
+        // drawing APIs (NSGraphicsContext, NSImage.draw, NSBezierPath.stroke,
+        // NSAttributedString.draw) that are not thread-safe.
+        let composed = AnnotationCompositor.composite(baseImage: image, annotations: items)
+        onSave(composed)
     }
 
     private func saveOriginal() {

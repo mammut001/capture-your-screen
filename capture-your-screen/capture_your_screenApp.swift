@@ -81,7 +81,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         }
 
         hotkeyActivity = ProcessInfo.processInfo.beginActivity(
-            options: [.userInitiated, .idleSystemSleepDisabled],
+            options: [.userInitiated],
             reason: "Listen for global screenshot hotkey"
         )
         hotkeyManager.ensureRegistered()
@@ -106,9 +106,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             self.hotkeyActivity = nil
         }
 
-        Task { @MainActor [weak self] in
-            self?.screenshotStore.stopWatchingScreenshotFolder()
-        }
+        screenshotStore.stopWatchingScreenshotFolder()
         hotkeyManager.unregister()
     }
 

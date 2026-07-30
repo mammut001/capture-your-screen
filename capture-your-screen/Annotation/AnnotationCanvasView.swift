@@ -161,6 +161,7 @@ struct AnnotationCanvasView: View {
                 if (item.type == .arrow || item.type == .rectangle) && dx < 0.005 && dy < 0.005 {
                     canvas.items.removeAll { $0.id == id }
                     canvas.selectedItemID = nil
+                    canvas.removeLastUndoSnapshot()
                     return
                 }
                 // For text: enter inline editing mode.

@@ -6,17 +6,17 @@ import SwiftUI
 @MainActor
 final class MenuBarViewModel: ObservableObject {
     @Published var historySections: [ScreenshotDaySection] = []
+    /// Flattened header + item rows for the multi-day lazy history list.
+    @Published private(set) var historyRows: [HistoryListRow] = []
     @Published var currentHotkeyDisplay: String = HotkeyConfiguration.default.displayString
     @Published var isCapturing: Bool = false
     @Published var errorMessage: String?
-    @Published var selectedItem: ScreenshotHistoryItem?
     @Published var showCopyToast: Bool = false
 
     @Published var visibleMonth: Date = Date()
     @Published var selectedDate: Date = Date()
     @Published var appliedDateFilter: Date? = nil
 
-    @Published var storageError: StorageError?
     @Published private(set) var permissionStatus: PermissionStatus = .notDetermined
     /// Mirrors store preview map so cards re-render without rebuilding day sections.
     @Published private(set) var thumbnailsByID: [String: NSImage] = [:]
@@ -29,6 +29,7 @@ final class MenuBarViewModel: ObservableObject {
     private var lastMembershipSignature: [String] = []
     /// Counts full section rebuilds (tests / diagnostics).
     private(set) var sectionRebuildCount = 0
+    private var copyToastTask: Task<Void, Never>?
 
     init(captureCoordinator: CaptureCoordinator, screenshotStore: ScreenshotStore, hotkeyManager: HotkeyManager) {
         self.captureCoordinator = captureCoordinator
@@ -174,21 +175,6 @@ final class MenuBarViewModel: ObservableObject {
         }
     }
 
-    func selectItem(_ item: ScreenshotHistoryItem) {
-        withAnimation(.easeInOut(duration: 0.2)) {
-            if selectedItem?.id == item.id {
-                selectedItem = nil
-            } else {
-                selectedItem = item
-            }
-        }
-    }
-
-    func confirmCopy(_ item: ScreenshotHistoryItem) {
-        copyScreenshot(item)
-        selectedItem = nil
-    }
-
     private func showError(_ message: String) {
         errorMessage = message
         DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
@@ -314,9 +300,6 @@ final class MenuBarViewModel: ObservableObject {
         visibleMonth = calendar.startOfMonth(for: selectedDate)
     }
 
-    func toggleDatePicker() {
-    }
-
     var browsingByDate: Bool {
         appliedDateFilter != nil
     }
@@ -330,8 +313,13 @@ final class MenuBarViewModel: ObservableObject {
             .map { $0.toHistoryItem() }
     }
 
-    var datesWithScreenshots: Set<Date> {
-        Set(screenshotStore.screenshots.map { calendar.startOfDay(for: $0.date) })
+    var datesWithScreenshots: [Date: Int] {
+        var counts: [Date: Int] = [:]
+        for record in screenshotStore.screenshots {
+            let day = calendar.startOfDay(for: record.date)
+            counts[day, default: 0] += 1
+        }
+        return counts
     }
 
     // MARK: - Internal
@@ -351,7 +339,9 @@ final class MenuBarViewModel: ObservableObject {
 
     private func rebuildSections(from records: [ScreenshotRecord]) {
         sectionRebuildCount += 1
-        historySections = HistorySectionBuilder.sections(from: records, calendar: calendar)
+        let sections = HistorySectionBuilder.sections(from: records, calendar: calendar)
+        historySections = sections
+        historyRows = HistorySectionBuilder.flatRows(from: sections)
     }
 
     func updateHotkeyDisplay(_ display: String) {
@@ -457,11 +447,13 @@ final class MenuBarViewModel: ObservableObject {
     }
 
     private func showCopySuccess() {
+        copyToastTask?.cancel()
         withAnimation(.easeInOut(duration: 0.3)) {
             showCopyToast = true
         }
-        Task {
+        copyToastTask = Task {
             try? await Task.sleep(nanoseconds: 2_000_000_000)
+            guard !Task.isCancelled else { return }
             withAnimation(.easeInOut(duration: 0.3)) {
                 showCopyToast = false
             }

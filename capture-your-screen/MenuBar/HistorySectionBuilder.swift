@@ -1,6 +1,23 @@
 import Foundation
 import AppKit
 
+/// One row in the default multi-day history scroll list.
+/// Flattening headers + cards lets `LazyVStack` virtualize each card independently
+/// instead of materializing an entire day at once.
+enum HistoryListRow: Identifiable, Equatable {
+    case dayHeader(date: Date, title: String, subtitle: String, count: Int)
+    case item(ScreenshotHistoryItem)
+
+    var id: String {
+        switch self {
+        case .dayHeader(let date, _, _, _):
+            return "day-\(date.timeIntervalSinceReferenceDate)"
+        case .item(let item):
+            return "item-\(item.id)"
+        }
+    }
+}
+
 /// Pure helpers for history list structure. Thumbnail images are intentionally
 /// not part of section identity — previews live in a separate map.
 enum HistorySectionBuilder {
@@ -15,6 +32,7 @@ enum HistorySectionBuilder {
     }
 
     /// Group records into day sections without embedding thumbnail images.
+    /// Every item is retained in its calendar-day section (no truncation).
     static func sections(
         from records: [ScreenshotRecord],
         calendar: Calendar = .current
@@ -32,6 +50,26 @@ enum HistorySectionBuilder {
                 )
             }
             .sorted { $0.date > $1.date }
+    }
+
+    /// Flatten day sections into lazy-scroll rows: one header per day, then every item.
+    static func flatRows(from sections: [ScreenshotDaySection]) -> [HistoryListRow] {
+        var rows: [HistoryListRow] = []
+        rows.reserveCapacity(sections.reduce(0) { $0 + 1 + $1.items.count })
+        for section in sections {
+            rows.append(
+                .dayHeader(
+                    date: section.date,
+                    title: section.title,
+                    subtitle: section.subtitle,
+                    count: section.items.count
+                )
+            )
+            for item in section.items {
+                rows.append(.item(item))
+            }
+        }
+        return rows
     }
 
     /// Apply one thumbnail into a map without touching list structure.

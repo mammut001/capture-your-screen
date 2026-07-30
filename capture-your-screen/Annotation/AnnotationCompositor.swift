@@ -153,15 +153,18 @@ enum AnnotationCompositor {
     // MARK: - Blur & Pixelate (CoreImage)
 
     private static func applyPixelate(to item: AnnotationItem, rect: NSRect, canvasSize: NSSize) {
-        // 获取当前 CGContext
         guard let ctx = NSGraphicsContext.current else { return }
         let cgCtx = ctx.cgContext
 
-        // 从当前上下文中提取 CGImage（通过创建 bitmap）
+        // makeImage() captures the bitmap as rendered. Since the context CTM is
+        // flipped (top-left origin), row 0 of the resulting CGImage is the
+        // visual top of the canvas.
         guard let cgImage = cgCtx.makeImage() else { return }
         let ciImage = CIImage(cgImage: cgImage)
 
-        // CIImage 使用左上角原点，rect 是 AppKit 左下角原点，需要转换
+        // CIImage uses a bottom-left origin: CI y=0 is the image's bottom row,
+        // CI y=H is the top. Our `rect` has origin.y measured from the top
+        // (flipped context), so the equivalent CI origin is H - y - h.
         let ciRect = CGRect(
             x: rect.origin.x,
             y: canvasSize.height - rect.origin.y - rect.height,
@@ -169,10 +172,10 @@ enum AnnotationCompositor {
             height: rect.height
         )
 
-        // 1. 先裁剪出目标区域
+        // 1. Crop to the target region.
         let cropped = ciImage.cropped(to: ciRect)
 
-        // 2. 对裁剪后的区域应用像素化滤镜
+        // 2. Apply pixellation filter.
         let filter = CIFilter.pixellate()
         filter.inputImage = cropped
         filter.scale = Float(item.pixelSize * max(canvasSize.width / 1000.0, 1))
@@ -180,13 +183,16 @@ enum AnnotationCompositor {
 
         guard let pixelated = filter.outputImage else { return }
 
-        // 3. 将像素化区域定位回原始坐标
+        // 3. Translate back to the original CI position.
         let positionedPixelated = pixelated.transformed(by: CGAffineTransform(translationX: ciRect.origin.x, y: ciRect.origin.y))
 
-        // 4. 用共享 CIContext 渲染到 CGImage，然后绘制到当前 context
+        // 4. Render to a CGImage via the shared CIContext, then draw back.
         guard let resultCGImage = sharedCIContext.createCGImage(positionedPixelated, from: positionedPixelated.extent) else { return }
 
-        // 绘制回当前 context（AppKit 坐标，需要翻转 Y）
+        // draw(in:from:operation:fraction:) without respectFlipped treats the
+        // destination rect in the un-flipped coordinate space (image row 0 at
+        // max-y). Combined with the flipped CTM (user y → device H-y), we must
+        // pass y = H - rect.maxY so the image lands at the correct device rows.
         let flippedRect = NSRect(
             x: rect.origin.x,
             y: canvasSize.height - rect.maxY,
@@ -206,12 +212,13 @@ enum AnnotationCompositor {
         guard let ctx = NSGraphicsContext.current else { return }
         let cgCtx = ctx.cgContext
 
+        // Same coordinate rationale as applyPixelate: makeImage() row 0 = visual
+        // top; CIImage origin is bottom-left, so CI y = H - y - h.
         guard let cgImage = cgCtx.makeImage() else { return }
         let ciImage = CIImage(cgImage: cgImage)
 
         let radius = item.blurRadius * max(canvasSize.width / 1000.0, 1)
 
-        // CIImage 使用左上角原点，rect 是 AppKit 左下角原点，需要转换
         let ciRect = CGRect(
             x: rect.origin.x,
             y: canvasSize.height - rect.origin.y - rect.height,
@@ -219,18 +226,18 @@ enum AnnotationCompositor {
             height: rect.height
         )
 
-        // 1. 扩大裁剪区域（预留模糊半径，防止边缘被裁剪）
+        // 1. Expand crop region by the blur radius to avoid hard edges.
         let expandedRect = ciRect.insetBy(dx: -radius, dy: -radius)
         let cropped = ciImage.cropped(to: expandedRect)
 
-        // 2. 应用高斯模糊
+        // 2. Apply Gaussian blur.
         let blurFilter = CIFilter.gaussianBlur()
         blurFilter.inputImage = cropped
         blurFilter.radius = Float(radius)
 
         guard let blurred = blurFilter.outputImage else { return }
 
-        // 3. 模糊后裁剪回目标区域（避免晕染超出）
+        // 3. Crop back to the target size (removes blur bleed).
         let finalBlurred = blurred.cropped(to: CGRect(
             x: radius,
             y: radius,
@@ -238,10 +245,10 @@ enum AnnotationCompositor {
             height: ciRect.height
         ))
 
-        // 4. 定位到原始坐标
+        // 4. Translate back to the original CI position.
         let positionedBlurred = finalBlurred.transformed(by: CGAffineTransform(translationX: ciRect.origin.x, y: ciRect.origin.y))
 
-        // 5. 用共享 CIContext 渲染并绘制回当前 context
+        // 5. Render and draw back (see applyPixelate for flippedRect rationale).
         guard let resultCGImage = sharedCIContext.createCGImage(positionedBlurred, from: positionedBlurred.extent) else { return }
 
         let flippedRect = NSRect(

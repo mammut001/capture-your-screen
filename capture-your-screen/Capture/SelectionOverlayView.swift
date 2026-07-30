@@ -269,23 +269,16 @@ struct SelectionOverlayView: View {
 
     // MARK: - Helpers
 
-    private func confirmIfPossible() {
-        guard let rect = selection,
-              rect.width >= minSelectionSize,
-              rect.height >= minSelectionSize else { return }
-        onConfirm(rect)
-    }
-
     private func distanceBetween(_ lhs: CGPoint, _ rhs: CGPoint) -> CGFloat {
         hypot(rhs.x - lhs.x, rhs.y - lhs.y)
     }
 
     private func initializeDefaultSelectionAtMouseLocation() {
-        let desktopMaxY = NSScreen.screens.map(\.frame.maxY).max() ?? screen.frame.maxY
+        let primaryMaxY = NSScreen.screens.first?.frame.maxY ?? screen.frame.maxY
         let pointer = NSEvent.mouseLocation
         let pointerInGlobalTopLeft = CGPoint(
             x: pointer.x,
-            y: desktopMaxY - pointer.y
+            y: primaryMaxY - pointer.y
         )
 
         guard let windowBounds = topmostWindowBounds(containing: pointerInGlobalTopLeft) else {

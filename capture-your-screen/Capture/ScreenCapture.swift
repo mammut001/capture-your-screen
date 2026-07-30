@@ -32,9 +32,15 @@ struct ScreenCapture {
         let targetDisplayID = displayID ?? CGMainDisplayID()
 
         // Find the SCDisplay matching the target display
-        guard let scDisplay = content.displays.first(where: { $0.displayID == targetDisplayID })
-                ?? content.displays.first else {
-            throw ScreenCaptureError.noDisplayFound
+        let scDisplay: SCDisplay
+        if let match = content.displays.first(where: { $0.displayID == targetDisplayID }) {
+            scDisplay = match
+        } else {
+            print("ScreenCapture: requested display \(targetDisplayID) not found, falling back to first available display")
+            guard let fallback = content.displays.first else {
+                throw ScreenCaptureError.noDisplayFound
+            }
+            scDisplay = fallback
         }
 
         // Resolve HiDPI scale factor for output pixel dimensions

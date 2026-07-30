@@ -19,13 +19,14 @@ struct ScreenshotDaySection: Identifiable, Equatable {
     }
 
     var subtitle: String {
+        let countLabel = items.count == 1 ? "1 shot" : "\(items.count) shots"
         if Calendar.current.isDateInToday(date) {
-            return "Today"
+            return "Today · \(countLabel)"
         }
         if Calendar.current.isDateInYesterday(date) {
-            return "Yesterday"
+            return "Yesterday · \(countLabel)"
         }
-        return "\(items.count) shots"
+        return countLabel
     }
 
     private static let titleFormatter: DateFormatter = {
