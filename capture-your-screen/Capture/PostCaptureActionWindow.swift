@@ -84,7 +84,7 @@ final class PostCaptureActionPanelController: NSObject, PostCapturePanelPresenti
             context.duration = 0.15
             context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
             panel.animator().alphaValue = 0.0
-        } completionHandler: { [weak self] in
+        } completionHandler: { @MainActor [weak self] in
             self?.window = nil
             self?.model = nil
             self?.systemCloseHandler = nil

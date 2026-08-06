@@ -185,12 +185,12 @@ final class StorageResolver {
 
     init(
         defaults: BookmarkStorage = UserDefaults.standard,
-        bookmarkProvider: BookmarkProvider = RealBookmarkProvider(),
+        bookmarkProvider: BookmarkProvider? = nil,
         securityAccess: SecurityScopedAccess? = nil,
         fileManager: FileManager = .default
     ) {
         self.defaults = defaults
-        self.bookmarkProvider = bookmarkProvider
+        self.bookmarkProvider = bookmarkProvider ?? RealBookmarkProvider()
         self.securityAccess = securityAccess ?? SecurityScopedAccess()
         self.fileManager = fileManager
         loadBookmark()
