@@ -140,6 +140,10 @@ struct AnnotationEditorView: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
+        .overlay(alignment: .bottom) {
+            ShortcutHintBar()
+                .padding(.bottom, -28)
+        }
     }
 
     // MARK: - Actions
@@ -148,16 +152,12 @@ struct AnnotationEditorView: View {
         isSaving = true
         let items = canvas.items
         let image = baseImage
-        // Composite on the main thread — AnnotationCompositor uses AppKit
-        // drawing APIs (NSGraphicsContext, NSImage.draw, NSBezierPath.stroke,
-        // NSAttributedString.draw) that are not thread-safe.
         let composed = AnnotationCompositor.composite(baseImage: image, annotations: items)
         onSave(composed)
     }
 
     private func saveOriginal() {
         isSaving = true
-        // Brief defer so the toast renders for at least one frame before the window closes.
         Task { @MainActor in
             self.onSaveOriginal()
         }
@@ -165,6 +165,43 @@ struct AnnotationEditorView: View {
 
     private func cancel() {
         onCancel()
+    }
+}
+
+// MARK: - Shortcut hint bar
+
+private struct ShortcutHintBar: View {
+    var body: some View {
+        HStack(spacing: 14) {
+            ShortcutHintItem(keys: "⌘Z", action: "Undo")
+            ShortcutHintItem(keys: "⇧⌘Z", action: "Redo")
+            ShortcutHintItem(keys: "⌫", action: "Delete")
+            ShortcutHintItem(keys: "Space", action: "Skip")
+            ShortcutHintItem(keys: "⌘S", action: "Save")
+            ShortcutHintItem(keys: "Esc", action: "Cancel")
+        }
+        .font(.system(size: 10, weight: .medium))
+        .foregroundStyle(.secondary)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(Color(NSColor.controlBackgroundColor).opacity(0.85))
+        )
+    }
+}
+
+private struct ShortcutHintItem: View {
+    let keys: String
+    let action: String
+    var body: some View {
+        HStack(spacing: 3) {
+            Text(keys)
+                .font(.system(size: 10, weight: .bold, design: .monospaced))
+                .foregroundStyle(.primary)
+            Text(action)
+                .foregroundStyle(.secondary)
+        }
     }
 }
 

@@ -6,6 +6,17 @@ struct ScreenshotHistoryItem: Identifiable, Equatable {
     let url: URL
     let date: Date
     let displayTime: String
+    let fileSize: Int64?
+
+    var filename: String { url.lastPathComponent }
+
+    var formattedFileSize: String? {
+        guard let fileSize else { return nil }
+        let bytes = Double(fileSize)
+        if bytes < 1024 { return "\(fileSize) B" }
+        if bytes < 1024 * 1024 { return String(format: "%.1f KB", bytes / 1024) }
+        return String(format: "%.1f MB", bytes / (1024 * 1024))
+    }
 }
 
 struct ScreenshotDaySection: Identifiable, Equatable {
@@ -44,11 +55,13 @@ extension ScreenshotRecord {
     }()
 
     func toHistoryItem() -> ScreenshotHistoryItem {
-        ScreenshotHistoryItem(
+        let size: Int64? = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int64) ?? nil
+        return ScreenshotHistoryItem(
             id: id,
             url: url,
             date: date,
-            displayTime: Self.historyTimeFormatter.string(from: date)
+            displayTime: Self.historyTimeFormatter.string(from: date),
+            fileSize: size
         )
     }
 }

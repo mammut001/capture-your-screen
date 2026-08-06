@@ -6,6 +6,7 @@ struct CLIArguments: Equatable {
     var output: String?
     var json: Bool = false
     var checkPermission: Bool = false
+    var version: Bool = false
     var overwrite: Bool = false
     var regionX: Int?
     var regionY: Int?
@@ -14,7 +15,7 @@ struct CLIArguments: Equatable {
 
     /// Flags supported in P5.2.
     static let supportedFlags: Set<String> = [
-        "--mode", "--display", "--output", "--json", "--check-permission",
+        "--mode", "--display", "--output", "--json", "--check-permission", "--version",
     ]
 
     enum ParseError: Error, Equatable {
@@ -59,6 +60,10 @@ struct CLIArguments: Equatable {
             case "--check-permission":
                 if parsed.checkPermission { return .failure(.duplicateFlag("--check-permission")) }
                 parsed.checkPermission = true
+                index += 1
+            case "--version":
+                if parsed.version { return .failure(.duplicateFlag("--version")) }
+                parsed.version = true
                 index += 1
             case "--overwrite":
                 if parsed.overwrite { return .failure(.duplicateFlag("--overwrite")) }

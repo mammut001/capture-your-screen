@@ -21,6 +21,15 @@ enum HelperRunner {
     }
 
     private static func execute(_ args: CLIArguments) async -> Int32 {
+        if args.version {
+            printJSON(HelperJSON.encode([
+                "ok": true,
+                "helper_version": helperVersion,
+                "name": "capture-screen-helper",
+            ]))
+            return 0
+        }
+
         if args.unsupportedFlagsUsed {
             printJSON(HelperJSON.unsupported(
                 message: "One or more flags are not supported in this release. Supported: --mode full-display, --display main, --output, --json, --check-permission."
@@ -103,7 +112,8 @@ enum HelperRunner {
             guard let pngData = ScreenshotEncoding.pngData(from: image) else {
                 printJSON(HelperJSON.failure(
                     error: "image_encoding_failed",
-                    message: "Failed to encode screenshot as PNG."
+                    message: "Failed to encode screenshot as PNG.",
+                    hint: "Ensure the display is active and not in sleep mode."
                 ))
                 return 2
             }
@@ -115,6 +125,8 @@ enum HelperRunner {
             )
 
             try pngData.write(to: outputURL, options: .atomic)
+
+            let fileSize = (try? FileManager.default.attributesOfItem(atPath: outputURL.path)[.size] as? Int) ?? 0
 
             let sha256 = SHA256.hash(data: pngData)
                 .map { String(format: "%02x", $0) }
@@ -143,11 +155,19 @@ enum HelperRunner {
                 "sha256": sha256,
                 "width": pixelWidth,
                 "height": pixelHeight,
+                "file_size_bytes": fileSize,
                 "display_id": Int(displayID),
                 "created_at": createdAt,
                 "helper_version": helperVersion,
             ]))
             return 0
+        } catch let error as ScreenCaptureError {
+            printJSON(HelperJSON.failure(
+                error: "capture_failed",
+                message: error.localizedDescription,
+                hint: "Ensure Screen Recording permission is granted in System Settings."
+            ))
+            return 2
         } catch {
             printJSON(HelperJSON.failure(
                 error: "capture_failed",

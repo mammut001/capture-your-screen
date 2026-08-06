@@ -80,13 +80,17 @@ final class PostCaptureActionPanelController: NSObject, PostCapturePanelPresenti
 
     func dismiss() {
         guard let panel = window else { return }
-        // Clear references first so windowWillClose (triggered by close())
-        // is recognized as programmatic and does not fire the cancel handler.
-        window = nil
-        model = nil
-        systemCloseHandler = nil
-        panel.delegate = nil
-        panel.close()
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.15
+            context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            panel.animator().alphaValue = 0.0
+        } completionHandler: { [weak self] in
+            self?.window = nil
+            self?.model = nil
+            self?.systemCloseHandler = nil
+            panel.delegate = nil
+            panel.close()
+        }
     }
 
     // MARK: NSWindowDelegate

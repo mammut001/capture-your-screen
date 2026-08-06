@@ -79,6 +79,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             await self?.screenshotStore.refreshHistory()
             self?.screenshotStore.startWatchingScreenshotFolder()
             self?.viewModel.refreshPermissionStatus()
+            self?.updateMenuBarBadge()
         }
 
         hotkeyActivity = ProcessInfo.processInfo.beginActivity(
@@ -94,6 +95,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         // Screen Recording TCC can change while System Settings is open; re-check on focus.
         Task { @MainActor [weak self] in
             self?.viewModel.refreshPermissionStatus()
+        }
+    }
+
+    /// Updates the menu bar icon badge with today's screenshot count.
+    func updateMenuBarBadge() {
+        let today = Calendar.current.startOfDay(for: Date())
+        let count = screenshotStore.screenshots.filter { Calendar.current.isDate($0.date, inSameDayAs: today) }.count
+        if let button = NSApp.windows.first?.value(forKey: "statusItem") as? NSStatusItem {
+            button.button?.title = count > 0 ? "\(count)" : ""
         }
     }
 

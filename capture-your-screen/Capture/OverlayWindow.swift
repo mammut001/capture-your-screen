@@ -12,11 +12,6 @@ final class OverlayWindow: NSWindow {
         )
         self.isReleasedWhenClosed = false
         self.setFrame(screen.frame, display: false)
-        // Use statusBar level – high enough to appear above all app windows but
-        // low enough that the system can still recover (Cmd+Tab, Dock, etc.)
-        // if the process crashes without closing the window.
-        // screenSaverWindow level was causing the screen to appear "frozen"
-        // on EXC_BAD_ACCESS crashes because the transparent overlay stayed on top.
         self.level = .statusBar
         self.backgroundColor = .clear
         self.isOpaque = false
@@ -24,6 +19,24 @@ final class OverlayWindow: NSWindow {
         self.ignoresMouseEvents = false
         self.acceptsMouseMovedEvents = true
         self.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
+
+        // Smooth fade-in animation
+        self.alphaValue = 0
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.18
+            context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            self.animator().alphaValue = 1.0
+        }
+    }
+
+    override func close() {
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.12
+            context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            self.animator().alphaValue = 0.0
+        } completionHandler: {
+            super.close()
+        }
     }
 
     override var canBecomeKey: Bool { true }

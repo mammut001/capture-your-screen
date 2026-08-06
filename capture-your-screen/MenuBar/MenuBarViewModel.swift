@@ -2,6 +2,7 @@ import Combine
 import Foundation
 import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
 
 @MainActor
 final class MenuBarViewModel: ObservableObject {
@@ -30,6 +31,14 @@ final class MenuBarViewModel: ObservableObject {
     /// Counts full section rebuilds (tests / diagnostics).
     private(set) var sectionRebuildCount = 0
     private var copyToastTask: Task<Void, Never>?
+
+    @Published var selectedForBatch: Set<String> = []
+    @Published var isBatchMode: Bool = false
+
+    @AppStorage("pinnedScreenshotIDs") private var pinnedScreenshotIDsRaw: String = ""
+
+    @AppStorage("firstWeekdayPreference") var firstWeekdayPreference: Int = 1
+    @AppStorage("saveFormatPreference") var saveFormatPreference: SaveFormat = .png
 
     init(captureCoordinator: CaptureCoordinator, screenshotStore: ScreenshotStore, hotkeyManager: HotkeyManager) {
         self.captureCoordinator = captureCoordinator
@@ -344,6 +353,22 @@ final class MenuBarViewModel: ObservableObject {
         historyRows = HistorySectionBuilder.flatRows(from: sections)
     }
 
+    func historyRows(matching query: String) -> [HistoryListRow] {
+        guard !query.isEmpty else { return historyRows }
+        let lower = query.lowercased()
+        return historyRows.compactMap { row in
+            switch row {
+            case .dayHeader:
+                // Only keep day headers that have at least one matching item below them
+                return row
+            case .item(let item):
+                let nameMatch = item.filename.lowercased().contains(lower)
+                let timeMatch = item.displayTime.lowercased().contains(lower)
+                return (nameMatch || timeMatch) ? row : nil
+            }
+        }
+    }
+
     func updateHotkeyDisplay(_ display: String) {
         currentHotkeyDisplay = display
     }
@@ -459,6 +484,86 @@ final class MenuBarViewModel: ObservableObject {
             }
         }
     }
+
+    func toggleBatchMode() {
+        isBatchMode.toggle()
+        selectedForBatch.removeAll()
+    }
+
+    func toggleSelection(_ id: String) {
+        if selectedForBatch.contains(id) {
+            selectedForBatch.remove(id)
+        } else {
+            selectedForBatch.insert(id)
+        }
+    }
+
+    func batchDelete() {
+        guard !selectedForBatch.isEmpty else { return }
+        let ids = Array(selectedForBatch)
+        selectedForBatch.removeAll()
+        isBatchMode = false
+        for id in ids {
+            do {
+                try screenshotStore.delete(id: id)
+            } catch {
+                showError(error.localizedDescription)
+            }
+        }
+    }
+
+    func togglePin(_ id: String) {
+        var ids = Set(pinnedScreenshotIDsRaw.split(separator: ",").map(String.init))
+        if ids.contains(id) {
+            ids.remove(id)
+        } else {
+            ids.insert(id)
+        }
+        pinnedScreenshotIDsRaw = ids.joined(separator: ",")
+    }
+
+    func isPinned(_ id: String) -> Bool {
+        let ids = Set(pinnedScreenshotIDsRaw.split(separator: ",").map(String.init))
+        return ids.contains(id)
+    }
+
+    func exportHistoryToJSON() {
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.json]
+        panel.nameFieldStringValue = "screenshot-history.json"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+
+        let records = screenshotStore.screenshots.map { record -> [String: Any] in
+            var dict: [String: Any] = [
+                "path": record.url.path,
+                "filename": record.filename,
+                "date": ISO8601DateFormatter().string(from: record.date),
+            ]
+            if let size = (try? FileManager.default.attributesOfItem(atPath: record.url.path)[.size] as? Int64) {
+                dict["fileSizeBytes"] = size
+            }
+            return dict
+        }
+
+        let payload: [String: Any] = [
+            "exportedAt": ISO8601DateFormatter().string(from: Date()),
+            "count": records.count,
+            "screenshots": records,
+        ]
+
+        do {
+            let data = try JSONSerialization.data(withJSONObject: payload, options: [.prettyPrinted, .sortedKeys])
+            try data.write(to: url)
+        } catch {
+            showError(error.localizedDescription)
+        }
+    }
+}
+
+enum SaveFormat: String, CaseIterable, Identifiable {
+    case png
+    case jpeg
+    var id: String { rawValue }
 }
 
 extension Calendar {

@@ -8,6 +8,7 @@ struct MenuBarView: View {
     @Environment(\.dismiss) private var dismiss: DismissAction
     @State private var showingDatePicker: Bool = false
     @State private var pendingDate: Date = Date()
+    @State private var searchText: String = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -49,10 +50,41 @@ struct MenuBarView: View {
                         .background(Capsule().fill(Color.red.opacity(0.85)))
                         .transition(.opacity.combined(with: .move(edge: .bottom)))
                 }
+                if viewModel.isBatchMode && !viewModel.selectedForBatch.isEmpty {
+                    batchDeleteBar
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                }
             }
             .padding(.bottom, 12)
             .animation(.easeInOut(duration: 0.2), value: viewModel.errorMessage)
         }
+    }
+
+    private var batchDeleteBar: some View {
+        HStack(spacing: 12) {
+            Text("\(viewModel.selectedForBatch.count) selected")
+                .font(.caption.bold())
+            Spacer()
+            Button("Cancel") {
+                viewModel.toggleBatchMode()
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            Button("Delete Selected") {
+                viewModel.batchDelete()
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.small)
+            .tint(.red)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .background(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(Color(NSColor.windowBackgroundColor))
+                .shadow(color: Color.black.opacity(0.08), radius: 8, y: 4)
+        )
+        .padding(.horizontal, 12)
     }
 
     private var headerSection: some View {
@@ -128,6 +160,7 @@ struct MenuBarView: View {
                 )
             }
             .buttonStyle(.plain)
+            .keyboardShortcut(.space, modifiers: [])
 
             if viewModel.permissionStatus == .denied {
                 permissionWarningBanner
@@ -152,6 +185,28 @@ struct MenuBarView: View {
     @ViewBuilder
     private var historyContent: some View {
         VStack(alignment: .leading, spacing: 10) {
+            if !viewModel.browsingByDate && !showingDatePicker {
+                HStack(spacing: 8) {
+                    Image(systemName: "magnifyingglass")
+                        .foregroundColor(.secondary)
+                    TextField("Search screenshots…", text: $searchText)
+                        .textFieldStyle(.plain)
+                    if !searchText.isEmpty {
+                        Button(action: { searchText = "" }) {
+                            Image(systemName: "xmark.circle.fill")
+                                .foregroundColor(.secondary)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 8)
+                .background(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .fill(Color(NSColor.controlBackgroundColor).opacity(0.85))
+                )
+            }
+
             if viewModel.browsingByDate {
                 selectedDateBanner
                 historyScroll(items: viewModel.filteredHistoryItems)
@@ -170,7 +225,7 @@ struct MenuBarView: View {
                 ScrollView {
                     // Flat header + item rows: LazyVStack can recycle each card independently.
                     LazyVStack(alignment: .leading, spacing: 10) {
-                        ForEach(viewModel.historyRows) { row in
+                        ForEach(viewModel.historyRows(matching: searchText)) { row in
                             switch row {
                             case .dayHeader(let date, let title, let subtitle, let count):
                                 dayHeaderRow(
@@ -293,80 +348,119 @@ struct MenuBarView: View {
         subtitle: String,
         count: Int
     ) -> some View {
-        HStack(spacing: 10) {
-            Button(action: { viewModel.copyLatestScreenshot(on: date) }) {
-                Image(systemName: "doc.on.doc.fill")
-                    .foregroundColor(.accentColor)
-            }
-            .buttonStyle(.plain)
-            .help("Copy latest screenshot for this date")
+                HStack(spacing: 12) {
+                    Button(action: { viewModel.copyLatestScreenshot(on: date) }) {
+                        Image(systemName: "doc.on.doc.fill")
+                            .foregroundColor(.accentColor)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Copy latest screenshot for this date")
 
-            Button(action: {
-                withAnimation(.easeInOut(duration: 0.2)) {
-                    viewModel.selectDate(date)
-                    viewModel.applySelectedDateFilter()
-                }
-            }) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(title)
-                        .font(.subheadline.bold())
-                        .foregroundColor(.primary)
-                    Text(subtitle)
-                        .font(.caption2)
+                    Button(action: {
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            viewModel.selectDate(date)
+                            viewModel.applySelectedDateFilter()
+                        }
+                    }) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(title)
+                                .font(.subheadline.bold())
+                                .foregroundColor(.primary)
+                            Text(subtitle)
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .help("Focus this day")
+
+                    Spacer()
+
+                    Text("\(count)")
+                        .font(.caption.bold().monospacedDigit())
                         .foregroundColor(.secondary)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(Color.secondary.opacity(0.12), in: Capsule())
                 }
-            }
-            .buttonStyle(.plain)
-            .help("Focus this day")
-
-            Spacer()
-
-            Text("\(count)")
-                .font(.caption.bold().monospacedDigit())
-                .foregroundColor(.secondary)
-                .padding(.horizontal, 8)
-                .padding(.vertical, 4)
-                .background(Color.secondary.opacity(0.12), in: Capsule())
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 10)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(Color(NSColor.controlBackgroundColor).opacity(0.96))
-                .overlay(
+                .padding(.horizontal, 14)
+                .padding(.vertical, 10)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(
                     RoundedRectangle(cornerRadius: 14, style: .continuous)
-                        .stroke(Color.accentColor.opacity(0.18), lineWidth: 1)
+                        .fill(Color(NSColor.controlBackgroundColor).opacity(0.96))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                .stroke(Color.accentColor.opacity(0.18), lineWidth: 1)
+                        )
                 )
-        )
-        .padding(.top, 6)
+                .padding(.top, 6)
     }
 
     private func historyCard(item: ScreenshotHistoryItem) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Button(action: { viewModel.copyScreenshot(item) }) {
-                historyPreview(item)
+        let isSelected = viewModel.isBatchMode && viewModel.selectedForBatch.contains(item.id)
+        let isPinned = viewModel.isPinned(item.id)
+
+        return VStack(alignment: .leading, spacing: 8) {
+            ZStack(alignment: .topTrailing) {
+                Button(action: {
+                    if viewModel.isBatchMode {
+                        viewModel.toggleSelection(item.id)
+                    } else {
+                        viewModel.copyScreenshot(item)
+                    }
+                }) {
+                    historyPreview(item)
+                }
+                .buttonStyle(.plain)
+
+                if isPinned {
+                    Image(systemName: "pin.fill")
+                        .font(.caption2)
+                        .foregroundColor(.accentColor)
+                        .padding(6)
+                        .background(Circle().fill(Color.white.opacity(0.9)))
+                        .padding(8)
+                }
+
+                if viewModel.isBatchMode {
+                    Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                        .font(.title3)
+                        .foregroundColor(isSelected ? .accentColor : .white.opacity(0.8))
+                        .shadow(radius: 1)
+                        .padding(8)
+                }
             }
-            .buttonStyle(.plain)
 
             HStack(spacing: 10) {
                 Text(item.displayTime)
                     .font(.subheadline.monospacedDigit().weight(.semibold))
                     .foregroundColor(.primary)
 
+                if let sizeText = item.formattedFileSize {
+                    Text(sizeText)
+                        .font(.caption2.monospacedDigit())
+                        .foregroundColor(.secondary)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Color.secondary.opacity(0.10), in: Capsule())
+                }
+
                 Spacer()
 
-                Button(action: { viewModel.copyScreenshot(item) }) {
-                    Label("Copy", systemImage: "doc.on.doc")
-                }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.small)
+                if !viewModel.isBatchMode {
+                    Button(action: { viewModel.copyScreenshot(item) }) {
+                        Label("Copy", systemImage: "doc.on.doc")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
 
-                Button(action: { viewModel.showInFinder(item) }) {
-                    Label("Finder", systemImage: "folder")
+                    Button(action: { viewModel.showInFinder(item) }) {
+                        Label("Finder", systemImage: "folder")
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
                 }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
             }
         }
         .padding(10)
@@ -374,14 +468,21 @@ struct MenuBarView: View {
             RoundedRectangle(cornerRadius: 16, style: .continuous)
                 .fill(Color(NSColor.windowBackgroundColor))
                 .shadow(color: Color.black.opacity(0.04), radius: 3, y: 1)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .stroke(isSelected ? Color.accentColor : Color.clear, lineWidth: 2)
+                )
         )
         .contextMenu {
-            Button("Copy") { viewModel.copyScreenshot(item) }
-            Button("Show in Finder") { viewModel.showInFinder(item) }
-            Divider()
-            Button("Delete", role: .destructive) { viewModel.deleteScreenshot(item) }
+            if !viewModel.isBatchMode {
+                Button("Copy") { viewModel.copyScreenshot(item) }
+                Button("Show in Finder") { viewModel.showInFinder(item) }
+                Button(isPinned ? "Unpin" : "Pin") { viewModel.togglePin(item.id) }
+                Divider()
+                Button("Select for Batch Delete") { viewModel.toggleBatchMode(); viewModel.toggleSelection(item.id) }
+                Button("Delete", role: .destructive) { viewModel.deleteScreenshot(item) }
+            }
         }
-        // Stable estimated height helps LazyVStack scroll without jumping.
         .frame(maxWidth: .infinity, alignment: .leading)
         .onAppear {
             viewModel.loadThumbnailIfNeeded(for: item)
@@ -544,11 +645,7 @@ struct MenuBarView: View {
             .buttonStyle(.bordered)
 
             Button(action: {
-                // Dismiss the MenuBar popup first — the system popup window always
-                // sits on top, so Settings would be hidden behind it if we don't close it.
                 dismiss()
-                // Small delay lets the popup finish its close animation before
-                // the Settings window appears, so there's no visual overlap.
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
                     appDelegate.openSettingsWindow()
                 }
@@ -556,6 +653,12 @@ struct MenuBarView: View {
                 Label("Settings", systemImage: "gearshape")
             }
             .buttonStyle(.bordered)
+
+            Button(action: { viewModel.toggleBatchMode() }) {
+                Label(viewModel.isBatchMode ? "Done" : "Batch", systemImage: viewModel.isBatchMode ? "checkmark" : "checkmark.circle")
+            }
+            .buttonStyle(.bordered)
+            .tint(viewModel.isBatchMode ? .accentColor : nil)
 
             Spacer()
 
@@ -978,6 +1081,56 @@ struct SettingsView: View {
                     }
                 }
                 .padding(.horizontal, 4)
+            }
+
+            GroupBox(label: Label("Calendar", systemImage: "calendar")) {
+                VStack(alignment: .leading, spacing: 10) {
+                    Picker("First Weekday", selection: $viewModel.firstWeekdayPreference) {
+                        Text("Sunday").tag(1)
+                        Text("Monday").tag(2)
+                    }
+                    .pickerStyle(.segmented)
+                    .frame(maxWidth: 240)
+                    Text("Changes take effect immediately in the date picker.")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                }
+                .padding(.vertical, 4)
+                .padding(.horizontal, 4)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+
+            GroupBox(label: Label("Image Format", systemImage: "photo")) {
+                VStack(alignment: .leading, spacing: 10) {
+                    Picker("Save Format", selection: $viewModel.saveFormatPreference) {
+                        Text("PNG").tag(SaveFormat.png)
+                        Text("JPEG").tag(SaveFormat.jpeg)
+                    }
+                    .pickerStyle(.segmented)
+                    .frame(maxWidth: 200)
+                    Text("PNG preserves quality; JPEG produces smaller files.")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                }
+                .padding(.vertical, 4)
+                .padding(.horizontal, 4)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+
+            GroupBox(label: Label("Export", systemImage: "square.and.arrow.up")) {
+                VStack(alignment: .leading, spacing: 10) {
+                    Button("Export History to JSON…") {
+                        viewModel.exportHistoryToJSON()
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.regular)
+                    Text("Exports screenshot paths and metadata to a JSON file.")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                }
+                .padding(.vertical, 4)
+                .padding(.horizontal, 4)
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
 
             Spacer()
