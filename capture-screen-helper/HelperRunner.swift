@@ -2,6 +2,9 @@ import AppKit
 import CoreGraphics
 import CryptoKit
 import Foundation
+import os
+
+private let logger = Logger(subsystem: "com.captureyourscreen.helper", category: "HelperRunner")
 
 enum HelperRunner {
     static let helperVersion = "0.1.0"

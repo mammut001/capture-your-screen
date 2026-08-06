@@ -2,6 +2,9 @@ import ScreenCaptureKit
 import CoreMedia
 import CoreImage
 import AppKit
+import os
+
+private let logger = Logger(subsystem: "com.captureyourscreen.capture", category: "ScreenCapture")
 
 enum ScreenCaptureError: Error, LocalizedError {
     case noMainScreen
@@ -36,7 +39,7 @@ struct ScreenCapture {
         if let match = content.displays.first(where: { $0.displayID == targetDisplayID }) {
             scDisplay = match
         } else {
-            print("ScreenCapture: requested display \(targetDisplayID) not found, falling back to first available display")
+            logger.warning("Requested display \(targetDisplayID) not found, falling back to first available display")
             guard let fallback = content.displays.first else {
                 throw ScreenCaptureError.noDisplayFound
             }

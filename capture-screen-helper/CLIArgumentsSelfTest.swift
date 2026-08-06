@@ -1,4 +1,7 @@
 import Foundation
+import os
+
+private let logger = Logger(subsystem: "com.captureyourscreen.helper", category: "SelfTest")
 
 #if DEBUG
 enum CLIArgumentsSelfTest {
@@ -58,7 +61,7 @@ enum CLIArgumentsSelfTest {
         expectFailure(["--mode", "full-display", "--mode", "full-display"])
 
         if failures.isEmpty {
-            print("CLIArgumentsSelfTest: all passed")
+            logger.info("CLIArguments self-test passed")
             return true
         }
 

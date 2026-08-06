@@ -3,6 +3,9 @@ import Foundation
 import AppKit
 import SwiftUI
 import UserNotifications
+import os
+
+private let logger = Logger(subsystem: "com.captureyourscreen.core", category: "CaptureCoordinator")
 
 @MainActor
 final class CaptureCoordinator: ObservableObject {
@@ -167,7 +170,7 @@ final class CaptureCoordinator: ObservableObject {
                 self.beginReview(image: image, sourceDisplayID: displayID, selectionRect: rect)
             } catch {
                 guard let self, self.captureGeneration == generation else { return }
-                print("CaptureCoordinator: ERROR during capture: \(error.localizedDescription)")
+                logger.error("Capture failed: \(error.localizedDescription, privacy: .public)")
                 self.lastError = error
                 self.notifier.postNotification(
                     title: PostCaptureStrings.captureFailedNotificationTitle,
@@ -397,7 +400,7 @@ final class CaptureCoordinator: ObservableObject {
                 await self.performQuickSaveCompletion(image: image)
             } catch {
                 guard let self, self.captureGeneration == generation else { return }
-                print("CaptureCoordinator: ERROR during quick save: \(error.localizedDescription)")
+                logger.error("Quick save failed: \(error.localizedDescription, privacy: .public)")
                 self.lastError = error
                 self.notifier.postNotification(
                     title: PostCaptureStrings.saveFailedNotificationTitle,
@@ -414,13 +417,13 @@ final class CaptureCoordinator: ObservableObject {
             try clipboard.writeImage(image)
             let record = try await persistence.persistScreenshot(image)
             lastError = nil
-            print("CaptureCoordinator: Quick-saved as \(record.url.path)")
+            logger.info("Quick-saved screenshot to \(record.url.path, privacy: .public)")
             notifier.postNotification(
                 title: PostCaptureStrings.savedNotificationTitle,
                 body: PostCaptureStrings.savedNotificationBody(filename: record.url.lastPathComponent)
             )
         } catch {
-            print("CaptureCoordinator: ERROR during quick save: \(error.localizedDescription)")
+            logger.error("Quick save failed: \(error.localizedDescription, privacy: .public)")
             lastError = error
             notifier.postNotification(
                 title: PostCaptureStrings.saveFailedNotificationTitle,
@@ -475,7 +478,7 @@ final class CaptureCoordinator: ObservableObject {
         }
 
         guard activeSession?.id == id else { return }
-        print("CaptureCoordinator: Saved as \(record.url.path)")
+        logger.info("Saved screenshot to \(record.url.path, privacy: .public)")
 
         switch feedback {
         case .notification(let title):
@@ -501,7 +504,7 @@ final class CaptureCoordinator: ObservableObject {
     /// it was closed, e.g. after an annotation save failure).
     private func failAction(sessionID: UUID, message: String, error: Error) {
         guard let session = activeSession, session.id == sessionID else { return }
-        print("CaptureCoordinator: action failed: \(error)")
+        logger.error("Action failed: \(error.localizedDescription, privacy: .public)")
         lastError = error
         isProcessingAction = false
         state = .reviewing

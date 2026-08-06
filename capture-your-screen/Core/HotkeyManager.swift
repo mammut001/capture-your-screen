@@ -2,6 +2,9 @@ import Carbon.HIToolbox
 import Combine
 import Foundation
 import AppKit
+import os
+
+private let logger = Logger(subsystem: "com.captureyourscreen.core", category: "HotkeyManager")
 
 struct HotkeyConfiguration: Codable, Equatable {
     var keyCode: UInt32
@@ -78,7 +81,7 @@ final class HotkeyManager: ObservableObject {
                 &handlerRef
             )
             if status != noErr {
-                print("HotkeyManager: InstallEventHandler failed with status \(status)")
+                logger.error("InstallEventHandler failed with status \(status)")
             }
         }
 
@@ -103,7 +106,7 @@ final class HotkeyManager: ObservableObject {
             &hotKeyRef
         )
         if status != noErr {
-            print("HotkeyManager: RegisterEventHotKey failed with status \(status)")
+            logger.error("RegisterEventHotKey failed with status \(status)")
         }
     }
 

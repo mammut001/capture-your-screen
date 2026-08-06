@@ -8,6 +8,9 @@
 
 import Foundation
 import UserNotifications
+import os
+
+private let logger = Logger(subsystem: "com.captureyourscreen.services", category: "UserNotifications")
 
 @MainActor
 protocol UserNotifying: AnyObject {
@@ -31,7 +34,7 @@ final class SystemUserNotificationService: UserNotifying {
         )
         UNUserNotificationCenter.current().add(request) { error in
             if let error {
-                print("UserNotificationService: notification delivery failed: \(error.localizedDescription)")
+                logger.error("Notification delivery failed: \(error.localizedDescription, privacy: .public)")
             }
         }
     }

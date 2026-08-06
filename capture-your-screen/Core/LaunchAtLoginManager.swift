@@ -1,6 +1,9 @@
 import Foundation
 import ServiceManagement
 import Combine
+import os
+
+private let logger = Logger(subsystem: "com.captureyourscreen.core", category: "LaunchAtLogin")
 
 /// Manages the "Launch at Login" status using SMAppService (introduced in macOS 13.0).
 @MainActor
@@ -28,13 +31,13 @@ final class LaunchAtLoginManager: ObservableObject {
         do {
             if isEnabled {
                 try SMAppService.mainApp.register()
-                print("LaunchAtLoginManager: Successfully registered main app.")
+                logger.info("Successfully registered main app for launch at login.")
             } else {
                 try SMAppService.mainApp.unregister()
-                print("LaunchAtLoginManager: Successfully unregistered main app.")
+                logger.info("Successfully unregistered main app from launch at login.")
             }
         } catch {
-            print("LaunchAtLoginManager: Error changing launch at login status: \(error.localizedDescription)")
+            logger.error("Error changing launch at login status: \(error.localizedDescription, privacy: .public)")
             // Rollback UI state if system call failed.
             isEnabled = (SMAppService.mainApp.status == .enabled)
         }
