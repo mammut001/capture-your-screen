@@ -71,7 +71,8 @@ final class PostCaptureActionPanelController: NSObject, PostCapturePanelPresenti
 
         position(panel, onDisplay: session.sourceDisplayID)
         panel.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
+        // Do NOT NSApp.activate — the panel only needs key status, not
+        // full app activation, so we don't disturb other menubar apps.
     }
 
     func showStatus(_ status: PostCapturePanelStatus) {
@@ -80,16 +81,24 @@ final class PostCaptureActionPanelController: NSObject, PostCapturePanelPresenti
 
     func dismiss() {
         guard let panel = window else { return }
+        let controller = self
         NSAnimationContext.runAnimationGroup { context in
             context.duration = 0.15
             context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
             panel.animator().alphaValue = 0.0
-        } completionHandler: { @MainActor [weak self] in
-            self?.window = nil
-            self?.model = nil
-            self?.systemCloseHandler = nil
-            panel.delegate = nil
-            panel.close()
+        } completionHandler: {
+            Task { @MainActor [controller] in
+                panel.delegate = nil
+                panel.close()
+
+                // A newer panel may already have replaced this one while the
+                // fade-out animation was running. Only clear state owned by
+                // the panel that actually finished closing.
+                guard controller.window === panel else { return }
+                controller.window = nil
+                controller.model = nil
+                controller.systemCloseHandler = nil
+            }
         }
     }
 

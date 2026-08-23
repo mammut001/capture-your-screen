@@ -3,20 +3,30 @@ import AppKit
 import CoreGraphics
 
 /// Full-screen SwiftUI overlay for area selection.
-/// Renders a dark, semi-transparent veil over the screen with a clear cutout
-/// for the actively selected rectangle.
+/// Shows a **frozen** full-display screenshot underneath a dark veil so the
+/// selection cutout reveals the captured frame (including menus / popovers)
+/// instead of the live desktop.
 struct SelectionOverlayView: View {
+    /// Full-display freeze-frame captured before this overlay appeared.
+    let frozenImage: NSImage
+    /// Window/popover bounds sampled before the overlay could dismiss it.
+    let initialSelection: CGRect?
+    /// Immutable pre-overlay candidates used for both hover and click snapping.
+    let windowCandidates: [CaptureWindowCandidate]
     let onConfirm: (CGRect) -> Void
     let onQuickSave: (CGRect) -> Void
     let onCancel: () -> Void
+    let onSelectionChanged: (CGRect?) -> Void
     let screen: NSScreen
     let hotkeyConfig: HotkeyConfiguration
 
     @State private var selection: CGRect? = nil
     @State private var dragStart: CGPoint? = nil
+    @State private var selectionBeforePress: CGRect? = nil
+    @State private var isManualDragging: Bool = false
+    @State private var lastHoverLocation: CGPoint? = nil
     @State private var isSelectionFinalized: Bool = false
     @State private var showKeyVisualizer: Bool = false
-    @State private var eventMonitor: Any?
 
     private let minSelectionSize: CGFloat = 10
     private let clickSelectionThreshold: CGFloat = 6
@@ -24,16 +34,28 @@ struct SelectionOverlayView: View {
     var body: some View {
         GeometryReader { geo in
             ZStack {
+                // Freeze-frame fills the overlay so cutouts show the captured UI.
+                Image(nsImage: frozenImage)
+                    .resizable()
+                    .interpolation(.high)
+                    .frame(width: geo.size.width, height: geo.size.height)
+                    .allowsHitTesting(false)
+
                 // Dark veil with a clear cutout punched out over the selection
                 darkVeil(in: geo.size)
                     .allowsHitTesting(false)
 
+                // Keep selection gestures below controls so Quick Save / confirm
+                // clicks can never be stolen by the zero-distance drag gesture.
+                interactionCanvas(size: geo.size)
+
                 // Selection border and action buttons
                 if let rect = selection, rect.width >= minSelectionSize, rect.height >= minSelectionSize {
                     selectionBorder(rect: rect)
+                        .allowsHitTesting(false)
 
                     if isSelectionFinalized {
-                        actionButtons(for: rect)
+                        actionButtons(for: rect, canvasSize: geo.size)
                     }
                 }
 
@@ -41,6 +63,7 @@ struct SelectionOverlayView: View {
                 instructionLabel
                     .padding(.top, 24)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                    .allowsHitTesting(false)
 
                 // Key visualizer — overlaid independently so it doesn't shift the label
                 if showKeyVisualizer {
@@ -48,59 +71,32 @@ struct SelectionOverlayView: View {
                         .transition(.scale(scale: 0.85).combined(with: .opacity))
                         .padding(.top, 72)
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                        .allowsHitTesting(false)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .contentShape(Rectangle())
-            .gesture(dragGesture)
+            .onChange(of: selection) { _, newSelection in
+                onSelectionChanged(newSelection)
+            }
             .onAppear {
                 NSCursor.crosshair.push()
-                initializeDefaultSelectionAtMouseLocation()
+                if let initialSelection {
+                    selection = initialSelection
+                    // Initial geometry is a hover proposal; click locks it.
+                    isSelectionFinalized = false
+                    onSelectionChanged(initialSelection)
+                } else {
+                    initializeDefaultSelectionAtMouseLocation()
+                    onSelectionChanged(selection)
+                }
                 // Briefly flash the active hotkey as visual confirmation
                 withAnimation(.spring(response: 0.3, dampingFraction: 0.6)) { showKeyVisualizer = true }
                 DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
                     withAnimation(.easeInOut(duration: 0.2)) { showKeyVisualizer = false }
                 }
-                eventMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
-                    if event.keyCode == 53 { // Escape
-                        // Defer to next run loop to avoid re-entrancy while inside event callback
-                        DispatchQueue.main.async { onCancel() }
-                        return nil
-                    }
-                    let mods = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-                    let isReturn = event.keyCode == 36
-                    // ⌘↩ (Cmd+Return) → Quick Save
-                    if isReturn, mods.contains(.command) {
-                        DispatchQueue.main.async {
-                            if let rect = self.selection,
-                               rect.width >= self.minSelectionSize,
-                               rect.height >= self.minSelectionSize {
-                                onQuickSave(rect)
-                            }
-                        }
-                        return nil
-                    }
-                    if isReturn || event.keyCode == 76 { // Return / Enter
-                        // Confirm capture if a valid selection exists, otherwise cancel
-                        DispatchQueue.main.async {
-                            if let rect = self.selection,
-                               rect.width >= self.minSelectionSize,
-                               rect.height >= self.minSelectionSize {
-                                onConfirm(rect)
-                            } else {
-                                onCancel()
-                            }
-                        }
-                        return nil
-                    }
-                    return event
-                }
             }
             .onDisappear {
                 NSCursor.pop()
-                if let monitor = eventMonitor {
-                    NSEvent.removeMonitor(monitor)
-                }
             }
         }
         .ignoresSafeArea()
@@ -147,12 +143,15 @@ struct SelectionOverlayView: View {
                 .padding(.horizontal, 6)
                 .padding(.vertical, 3)
                 .background(Color.black.opacity(0.65), in: RoundedRectangle(cornerRadius: 4))
-                .position(x: rect.midX, y: rect.maxY + 16)
+                .position(
+                    x: min(max(rect.midX, 42), max(42, screen.frame.width - 42)),
+                    y: rect.maxY + 24 <= screen.frame.height ? rect.maxY + 16 : max(10, rect.minY - 16)
+                )
         }
     }
 
     private var instructionLabel: some View {
-        Text("Click a window or drag to select — Esc cancel, ⌘↩ quick save, ↵ annotate")
+        Text("Hover to target, click to lock, or drag — Esc cancel, ⌘↩ quick save, ↵ annotate")
             .font(.system(size: 13, weight: .medium))
             .foregroundColor(.white)
             .padding(.horizontal, 16)
@@ -162,21 +161,47 @@ struct SelectionOverlayView: View {
 
     // MARK: - Drag gesture
 
+    private func interactionCanvas(size: CGSize) -> some View {
+        Color.clear
+            .contentShape(Rectangle())
+            .frame(width: size.width, height: size.height)
+            .onContinuousHover { phase in
+                guard !isSelectionFinalized, dragStart == nil else { return }
+                switch phase {
+                case .active(let location):
+                    lastHoverLocation = location
+                    selection = CaptureWindowSelection.selectionRect(
+                        at: location,
+                        candidates: windowCandidates,
+                        screenSize: size
+                    )
+                case .ended:
+                    break
+                }
+            }
+            .gesture(dragGesture)
+    }
+
     private var dragGesture: some Gesture {
         DragGesture(minimumDistance: 0, coordinateSpace: .local)
             .onChanged { value in
                 let start = dragStart ?? value.startLocation
                 if dragStart == nil {
                     dragStart = value.startLocation
+                    selectionBeforePress = selection
+                    isManualDragging = false
                     isSelectionFinalized = false
                 }
 
                 let current = value.location
 
                 guard distanceBetween(start, current) > clickSelectionThreshold else {
-                    selection = nil
+                    // Preserve the hover proposal during normal click jitter.
+                    selection = selectionBeforePress
                     return
                 }
+
+                isManualDragging = true
 
                 selection = CGRect(
                     x: min(start.x, current.x),
@@ -190,7 +215,8 @@ struct SelectionOverlayView: View {
                 let end = value.location
                 dragStart = nil
 
-                guard distanceBetween(start, end) > clickSelectionThreshold else {
+                guard isManualDragging,
+                      distanceBetween(start, end) > clickSelectionThreshold else {
                     if let autoSelection = autoSelectionRect(at: end) {
                         selection = autoSelection
                         isSelectionFinalized = true
@@ -198,6 +224,8 @@ struct SelectionOverlayView: View {
                         selection = nil
                         isSelectionFinalized = false
                     }
+                    selectionBeforePress = nil
+                    isManualDragging = false
                     return
                 }
 
@@ -209,17 +237,27 @@ struct SelectionOverlayView: View {
                     selection = nil
                     isSelectionFinalized = false
                 }
+                selectionBeforePress = nil
+                isManualDragging = false
             }
     }
 
     // MARK: - Action buttons
 
-    private func actionButtons(for rect: CGRect) -> some View {
+    private func actionButtons(for rect: CGRect, canvasSize: CGSize) -> some View {
         HStack(spacing: 12) {
             // X button — cancel selection and let user re-select
             Button(action: {
                 isSelectionFinalized = false
-                selection = nil
+                if let lastHoverLocation {
+                    selection = CaptureWindowSelection.selectionRect(
+                        at: lastHoverLocation,
+                        candidates: windowCandidates,
+                        screenSize: canvasSize
+                    )
+                } else {
+                    selection = nil
+                }
             }) {
                 Image(systemName: "xmark")
                     .font(.system(size: 14, weight: .bold))
@@ -264,7 +302,10 @@ struct SelectionOverlayView: View {
             }
             .buttonStyle(.plain)
         }
-        .position(x: rect.midX, y: rect.maxY + 30)
+        .position(
+            x: min(max(rect.midX, 100), max(100, canvasSize.width - 100)),
+            y: rect.maxY + 50 <= canvasSize.height ? rect.maxY + 30 : max(24, rect.minY - 30)
+        )
     }
 
     // MARK: - Helpers
@@ -274,150 +315,17 @@ struct SelectionOverlayView: View {
     }
 
     private func initializeDefaultSelectionAtMouseLocation() {
-        let primaryMaxY = NSScreen.screens.first?.frame.maxY ?? screen.frame.maxY
-        let pointer = NSEvent.mouseLocation
-        let pointerInGlobalTopLeft = CGPoint(
-            x: pointer.x,
-            y: primaryMaxY - pointer.y
-        )
-
-        guard let windowBounds = topmostWindowBounds(containing: pointerInGlobalTopLeft) else {
-            selection = nil
-            isSelectionFinalized = false
-            return
-        }
-
-        let screenRect = screenFrameInGlobalTopLeftCoordinates
-        let clippedBounds = windowBounds.intersection(screenRect)
-        guard !clippedBounds.isNull,
-              clippedBounds.width >= minSelectionSize,
-              clippedBounds.height >= minSelectionSize else {
-            selection = nil
-            isSelectionFinalized = false
-            return
-        }
-
-        selection = CGRect(
-            x: clippedBounds.minX - screenRect.minX,
-            y: clippedBounds.minY - screenRect.minY,
-            width: clippedBounds.width,
-            height: clippedBounds.height
-        ).integral
-        isSelectionFinalized = true
+        let local = CaptureWindowSelection.screenLocalPoint(fromCocoaGlobal: NSEvent.mouseLocation, on: screen)
+        lastHoverLocation = local
+        selection = autoSelectionRect(at: local)
+        isSelectionFinalized = false
     }
 
     private func autoSelectionRect(at localPoint: CGPoint) -> CGRect? {
-        let screenRect = screenFrameInGlobalTopLeftCoordinates
-        let globalPoint = CGPoint(
-            x: screenRect.minX + localPoint.x,
-            y: screenRect.minY + localPoint.y
-        )
-
-        guard let windowBounds = topmostWindowBounds(containing: globalPoint) else {
-            return nil
-        }
-
-        let clippedBounds = windowBounds.intersection(screenRect)
-        guard !clippedBounds.isNull,
-              clippedBounds.width >= minSelectionSize,
-              clippedBounds.height >= minSelectionSize else {
-            return nil
-        }
-
-        return CGRect(
-            x: clippedBounds.minX - screenRect.minX,
-            y: clippedBounds.minY - screenRect.minY,
-            width: clippedBounds.width,
-            height: clippedBounds.height
-        ).integral
-    }
-
-    private func topmostWindowBounds(containing point: CGPoint) -> CGRect? {
-        guard let windowInfoList = CGWindowListCopyWindowInfo(
-            [.optionOnScreenOnly, .excludeDesktopElements],
-            kCGNullWindowID
-        ) as? [[String: Any]] else {
-            return nil
-        }
-
-        let appName = Bundle.main.object(forInfoDictionaryKey: kCFBundleNameKey as String) as? String
-
-        for windowInfo in windowInfoList {
-            guard isSelectableWindow(windowInfo, appName: appName),
-                  let bounds = windowBounds(from: windowInfo),
-                  bounds.contains(point) else {
-                continue
-            }
-
-            return bounds
-        }
-
-        return nil
-    }
-
-    private func isSelectableWindow(_ windowInfo: [String: Any], appName: String?) -> Bool {
-        let layer = windowInfo[kCGWindowLayer as String] as? Int ?? 0
-        guard layer == 0 else { return false }
-
-        let alpha = windowInfo[kCGWindowAlpha as String] as? Double ?? 1
-        guard alpha > 0.05 else { return false }
-
-        let isOnscreen = windowInfo[kCGWindowIsOnscreen as String] as? Int ?? 1
-        guard isOnscreen == 1 else { return false }
-
-        if let ownerName = windowInfo[kCGWindowOwnerName as String] as? String,
-           ownerName == appName {
-            return false
-        }
-
-        guard let bounds = windowBounds(from: windowInfo) else {
-            return false
-        }
-
-        return bounds.width >= minSelectionSize && bounds.height >= minSelectionSize
-    }
-
-    private func windowBounds(from windowInfo: [String: Any]) -> CGRect? {
-        guard let boundsDictionary = windowInfo[kCGWindowBounds as String] as? [String: Any],
-              let x = numericValue(for: "X", in: boundsDictionary),
-              let y = numericValue(for: "Y", in: boundsDictionary),
-              let width = numericValue(for: "Width", in: boundsDictionary),
-              let height = numericValue(for: "Height", in: boundsDictionary) else {
-            return nil
-        }
-
-        return CGRect(x: x, y: y, width: width, height: height)
-    }
-
-    private func numericValue(for key: String, in dictionary: [String: Any]) -> CGFloat? {
-        if let number = dictionary[key] as? NSNumber {
-            return CGFloat(truncating: number)
-        }
-
-        if let doubleValue = dictionary[key] as? Double {
-            return doubleValue
-        }
-
-        if let intValue = dictionary[key] as? Int {
-            return CGFloat(intValue)
-        }
-
-        return dictionary[key] as? CGFloat
-    }
-
-    private var screenFrameInGlobalTopLeftCoordinates: CGRect {
-        // Use the primary screen's maxY as the global reference, not the max of ALL
-        // screens. CGWindowList coordinates are anchored to the primary display's
-        // bottom-left origin. Using the per-screen frame.minX/maxY ensures the
-        // coordinate transform correctly maps this screen's local origin to the
-        // global top-left coordinate system regardless of multi-monitor layout.
-        let primaryMaxY = NSScreen.screens.first?.frame.maxY ?? screen.frame.maxY
-
-        return CGRect(
-            x: screen.frame.minX,
-            y: primaryMaxY - screen.frame.maxY,
-            width: screen.frame.width,
-            height: screen.frame.height
+        CaptureWindowSelection.selectionRect(
+            at: localPoint,
+            candidates: windowCandidates,
+            screenSize: screen.frame.size
         )
     }
 

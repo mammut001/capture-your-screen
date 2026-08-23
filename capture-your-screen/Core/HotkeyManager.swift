@@ -6,6 +6,15 @@ import os
 
 private let logger = Logger(subsystem: "com.captureyourscreen.core", category: "HotkeyManager")
 
+enum CaptureKeyCommand {
+    case cancel
+    case confirm
+    case quickSave
+}
+
+private let primaryHotKeySignature: OSType = 0x43415050 // "CAPP"
+private let captureHotKeySignature: OSType = 0x4341504B // "CAPK"
+
 struct HotkeyConfiguration: Codable, Equatable {
     var keyCode: UInt32
     var modifiers: UInt32   // Carbon modifier flags (cmdKey | shiftKey etc.)
@@ -25,10 +34,26 @@ private func carbonHotkeyCallback(
     _ event: EventRef?,
     _ userData: UnsafeMutableRawPointer?
 ) -> OSStatus {
-    guard let manager = HotkeyManager.callbackTarget else {
+    guard let manager = HotkeyManager.callbackTarget, let event else {
         return OSStatus(eventNotHandledErr)
     }
-    DispatchQueue.main.async { manager.handleHotkeyPressed() }
+
+    var hotKeyID = EventHotKeyID()
+    let status = GetEventParameter(
+        event,
+        EventParamName(kEventParamDirectObject),
+        EventParamType(typeEventHotKeyID),
+        nil,
+        MemoryLayout<EventHotKeyID>.size,
+        nil,
+        &hotKeyID
+    )
+    guard status == noErr,
+          hotKeyID.signature == primaryHotKeySignature || hotKeyID.signature == captureHotKeySignature else {
+        return OSStatus(eventNotHandledErr)
+    }
+
+    DispatchQueue.main.async { manager.handleRegisteredHotKey(hotKeyID) }
     return noErr
 }
 
@@ -45,6 +70,8 @@ final class HotkeyManager: ObservableObject {
     var onHotkeyPressed: (() -> Void)?
 
     private var hotKeyRef: EventHotKeyRef?
+    private var captureHotKeyRefs: [EventHotKeyRef] = []
+    private var captureKeyHandler: ((CaptureKeyCommand) -> Void)?
     private var handlerRef: EventHandlerRef?
     private var localMonitor: Any?
     private static let defaultsKey = "hotkeyConfiguration"
@@ -96,7 +123,7 @@ final class HotkeyManager: ObservableObject {
             hotKeyRef = nil
         }
         
-        var hotKeyID = EventHotKeyID(signature: 0x43415050 /* "CAPP" */, id: 1)
+        let hotKeyID = EventHotKeyID(signature: primaryHotKeySignature, id: 1)
         let status = RegisterEventHotKey(
             currentConfig.keyCode,
             currentConfig.modifiers,
@@ -129,6 +156,63 @@ final class HotkeyManager: ObservableObject {
     func handleHotkeyPressed() {
         guard !isRecording else { return }
         onHotkeyPressed?()
+    }
+
+    /// Consume capture controls globally while the non-activating overlay is
+    /// visible. Local NSEvent monitors cannot see keys owned by another app.
+    func beginCaptureKeyInterception(handler: @escaping (CaptureKeyCommand) -> Void) {
+        endCaptureKeyInterception()
+        captureKeyHandler = handler
+        registerCaptureHotKey(keyCode: UInt32(kVK_Escape), modifiers: 0, id: 2)
+        registerCaptureHotKey(keyCode: UInt32(kVK_Return), modifiers: 0, id: 3)
+        registerCaptureHotKey(keyCode: UInt32(kVK_ANSI_KeypadEnter), modifiers: 0, id: 4)
+        registerCaptureHotKey(keyCode: UInt32(kVK_Return), modifiers: UInt32(cmdKey), id: 5)
+        registerCaptureHotKey(keyCode: UInt32(kVK_ANSI_KeypadEnter), modifiers: UInt32(cmdKey), id: 6)
+    }
+
+    func endCaptureKeyInterception() {
+        for ref in captureHotKeyRefs {
+            UnregisterEventHotKey(ref)
+        }
+        captureHotKeyRefs.removeAll()
+        captureKeyHandler = nil
+    }
+
+#if DEBUG
+    var captureKeyRegistrationCountForTesting: Int { captureHotKeyRefs.count }
+#endif
+
+    private func registerCaptureHotKey(keyCode: UInt32, modifiers: UInt32, id: UInt32) {
+        var ref: EventHotKeyRef?
+        let hotKeyID = EventHotKeyID(signature: captureHotKeySignature, id: id)
+        let status = RegisterEventHotKey(
+            keyCode,
+            modifiers,
+            hotKeyID,
+            GetApplicationEventTarget(),
+            OptionBits(0),
+            &ref
+        )
+        if status == noErr, let ref {
+            captureHotKeyRefs.append(ref)
+        } else {
+            logger.error("Register capture hotkey \(id) failed with status \(status)")
+        }
+    }
+
+    fileprivate func handleRegisteredHotKey(_ hotKeyID: EventHotKeyID) {
+        if hotKeyID.signature == primaryHotKeySignature, hotKeyID.id == 1 {
+            handleHotkeyPressed()
+            return
+        }
+
+        guard hotKeyID.signature == captureHotKeySignature else { return }
+        switch hotKeyID.id {
+        case 2: captureKeyHandler?(.cancel)
+        case 3, 4: captureKeyHandler?(.confirm)
+        case 5, 6: captureKeyHandler?(.quickSave)
+        default: break
+        }
     }
 
     // MARK: - Recording
@@ -210,6 +294,7 @@ final class HotkeyManager: ObservableObject {
             Self.callbackTarget = nil
         }
         unregister()
+        endCaptureKeyInterception()
         if let ref = handlerRef {
             RemoveEventHandler(ref)
         }

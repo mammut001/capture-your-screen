@@ -95,7 +95,12 @@ final class ScreenshotStore: ObservableObject {
         return record
     }
 
-    private var thumbnailTasks: [String: Task<Void, Never>] = [:]
+    private struct ThumbnailTask {
+        let id: UUID
+        let task: Task<Void, Never>
+    }
+
+    private var thumbnailTasks: [String: ThumbnailTask] = [:]
 
     // MARK: - Cache Key
 
@@ -123,8 +128,8 @@ final class ScreenshotStore: ObservableObject {
             return
         }
 
-        guard resolver.securityAccess.isAccessing
-                || resolver.securityAccess.startAccessing(record.url.deletingLastPathComponent()) else {
+        // Always open the bookmark **root**, never the date subfolder.
+        guard resolver.ensureFolderAccess() else {
             return
         }
 
@@ -141,24 +146,30 @@ final class ScreenshotStore: ObservableObject {
     private func startThumbnailTask(for record: ScreenshotRecord, key: String) {
         activeThumbnailLoads += 1
         let fileURL = record.url
-        let task = Task.detached(priority: .utility) { [weak self, fileURL, key] in
-            let thumbnail = Self.loadThumbnailFromDisk(at: fileURL)
+        let taskID = UUID()
+        let task = Task { @MainActor [weak self, fileURL, key, taskID] in
+            let thumbnail = await Task.detached(priority: .utility) {
+                Self.loadThumbnailFromDisk(at: fileURL)
+            }.value
 
-            await MainActor.run {
-                guard let self else { return }
-                guard !Task.isCancelled else {
-                    self.finishThumbnailTaskSlot(forKey: key)
-                    return
-                }
-                if let thumbnail {
-                    self.finishThumbnailLoad(cacheKey: key, thumbnail: thumbnail)
-                } else {
-                    self.finishThumbnailTaskSlot(forKey: key)
-                }
+            guard let self else { return }
+            guard self.thumbnailTasks[key]?.id == taskID else {
+                // This task was cancelled/replaced while disk I/O was in flight.
+                // Never let its late completion consume the replacement's slot.
+                return
+            }
+            guard !Task.isCancelled else {
+                self.finishThumbnailTaskSlot(forKey: key, taskID: taskID)
+                return
+            }
+            if let thumbnail {
+                self.finishThumbnailLoad(cacheKey: key, thumbnail: thumbnail, taskID: taskID)
+            } else {
+                self.finishThumbnailTaskSlot(forKey: key, taskID: taskID)
             }
         }
 
-        thumbnailTasks[key] = task
+        thumbnailTasks[key] = ThumbnailTask(id: taskID, task: task)
     }
 
     /// Updates only the thumbnail map — never rewrites `screenshots`.
@@ -167,20 +178,21 @@ final class ScreenshotStore: ObservableObject {
         thumbnailsByID = HistorySectionBuilder.applyingThumbnail(thumbnail, for: key, to: thumbnailsByID)
     }
 
-    private func finishThumbnailLoad(cacheKey key: String, thumbnail: NSImage) {
+    private func finishThumbnailLoad(cacheKey key: String, thumbnail: NSImage, taskID: UUID) {
         publishThumbnail(thumbnail, forKey: key)
-        finishThumbnailTaskSlot(forKey: key)
+        finishThumbnailTaskSlot(forKey: key, taskID: taskID)
     }
 
-    private func finishThumbnailTaskSlot(forKey key: String) {
+    private func finishThumbnailTaskSlot(forKey key: String, taskID: UUID) {
+        guard thumbnailTasks[key]?.id == taskID else { return }
         thumbnailTasks[key] = nil
         activeThumbnailLoads = max(0, activeThumbnailLoads - 1)
         drainPendingThumbnailLoads()
     }
 
     private func clearThumbnailTask(forKey key: String) {
-        guard thumbnailTasks[key] != nil else { return }
-        thumbnailTasks[key]?.cancel()
+        guard let thumbnailTask = thumbnailTasks[key] else { return }
+        thumbnailTask.task.cancel()
         thumbnailTasks[key] = nil
         activeThumbnailLoads = max(0, activeThumbnailLoads - 1)
         pendingThumbnailIDs.removeAll { id in
@@ -189,8 +201,8 @@ final class ScreenshotStore: ObservableObject {
     }
 
     private func cancelAllThumbnailTasks() {
-        for task in thumbnailTasks.values {
-            task.cancel()
+        for thumbnailTask in thumbnailTasks.values {
+            thumbnailTask.task.cancel()
         }
         thumbnailTasks.removeAll()
         pendingThumbnailIDs.removeAll()
@@ -215,16 +227,10 @@ final class ScreenshotStore: ObservableObject {
 
         cancelAllThumbnailTasks()
 
-        guard resolver.hasValidFolder, let folderURL = resolver.screenshotFolderURL else {
-            screenshots = []
-            thumbnailsByID = [:]
-            hasLoadedHistory = true
-            folderWatcher.stop()
-            resolver.securityAccess.stopAll()
-            return
-        }
-
-        guard resolver.securityAccess.startAccessing(folderURL) else {
+        let folderURL: URL
+        do {
+            folderURL = try resolver.accessFolder()
+        } catch {
             screenshots = []
             thumbnailsByID = [:]
             hasLoadedHistory = true
@@ -301,17 +307,16 @@ final class ScreenshotStore: ObservableObject {
     }
 
     func startWatchingScreenshotFolder(forceRestart: Bool = false) {
-        guard let folderURL = resolver.screenshotFolderURL?.standardizedFileURL else { return }
-
-        guard resolver.securityAccess.startAccessing(folderURL) else { return }
+        guard let folderURL = try? resolver.accessFolder() else { return }
+        let root = folderURL.standardizedFileURL
 
         if !forceRestart,
            folderWatcher.isWatching,
-           folderWatcher.watchedFolderURL == folderURL {
+           folderWatcher.watchedFolderURL == root {
             return
         }
 
-        folderWatcher.start(watching: folderURL)
+        folderWatcher.start(watching: root)
     }
 
     func restartWatchingScreenshotFolder() {
@@ -350,9 +355,7 @@ final class ScreenshotStore: ObservableObject {
         guard resolver.isFileInScreenshotFolder(record.url) else {
             throw StorageError.fileNotInScreenshotDirectory
         }
-        guard resolver.securityAccess.startAccessing(record.url.deletingLastPathComponent()) else {
-            throw StorageError.securityScopedAccessDenied
-        }
+        _ = try resolver.accessFolder()
         guard let image = NSImage(contentsOf: record.url) else {
             throw StorageError.fileReadFailed(CocoaError(.fileReadUnknown))
         }
@@ -368,9 +371,7 @@ final class ScreenshotStore: ObservableObject {
         guard resolver.isFileInScreenshotFolder(record.url) else {
             throw StorageError.fileNotInScreenshotDirectory
         }
-        guard resolver.securityAccess.startAccessing(record.url.deletingLastPathComponent()) else {
-            throw StorageError.securityScopedAccessDenied
-        }
+        _ = try resolver.accessFolder()
         let key = thumbnailCacheKey(for: record.url)
         clearThumbnailTask(forKey: key)
         var nextThumbs = thumbnailsByID
@@ -390,7 +391,7 @@ final class ScreenshotStore: ObservableObject {
 
     /// Applies one thumbnail the same way production load completion does (unit tests).
     func applyThumbnailForTesting(_ image: NSImage, id: String) {
-        finishThumbnailLoad(cacheKey: id, thumbnail: image)
+        publishThumbnail(image, forKey: id)
     }
 
     var screenshotsPublishCountForTesting: Int { _screenshotsPublishCount }

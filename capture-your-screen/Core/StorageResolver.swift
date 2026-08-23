@@ -27,7 +27,7 @@ enum StorageError: LocalizedError {
         case .bookmarkIsInvalid:
             return "Saved folder access permission is no longer valid. Please re-select the folder in Settings."
         case .securityScopedAccessDenied:
-            return "Access to the screenshot folder was denied."
+            return "Cannot access the screenshot folder. Please re-select it in Settings."
         case .folderCreationFailed:
             return "Could not create the screenshot folder."
         case .fileWriteFailed:
@@ -87,47 +87,81 @@ struct RealBookmarkProvider: BookmarkProvider {
 
 // MARK: - Security-Scoped Access Lifecycle
 
+/// Abstraction over security-scoped resource access (testable).
 @MainActor
-final class SecurityScopedAccess {
-    private var activeURLs: [URL: Int] = [:]  // URL -> reference count
+protocol SecurityScopedAccessing: AnyObject {
+    @discardableResult
+    func startAccessing(_ url: URL) -> Bool
+    func stopAccessing(_ url: URL)
+    func stopAll()
+    var isAccessing: Bool { get }
+    func isAccessing(_ url: URL) -> Bool
+}
 
+/// Tracks `startAccessingSecurityScopedResource` only for bookmark **root**
+/// URLs. Child paths (date folders / files) must never call startAccessing
+/// themselves — once the root is open, the sandbox allows reading children.
+@MainActor
+final class SecurityScopedAccess: SecurityScopedAccessing {
+    private struct Entry {
+        let url: URL
+        var count: Int
+    }
+
+    /// Keyed by standardized path so equivalent URLs share one refcount.
+    private var active: [String: Entry] = [:]
+
+    private func key(for url: URL) -> String {
+        url.standardizedFileURL.path
+    }
+
+    @discardableResult
     func startAccessing(_ url: URL) -> Bool {
-        if let count = activeURLs[url] {
-            activeURLs[url] = count + 1
+        let k = key(for: url)
+        if var entry = active[k] {
+            entry.count += 1
+            active[k] = entry
             return true
         }
-        guard url.startAccessingSecurityScopedResource() else {
+        let standardized = url.standardizedFileURL
+        guard standardized.startAccessingSecurityScopedResource() else {
             return false
         }
-        activeURLs[url] = 1
+        active[k] = Entry(url: standardized, count: 1)
         return true
     }
 
     func stopAccessing(_ url: URL) {
-        guard let count = activeURLs[url] else { return }
-        if count <= 1 {
-            url.stopAccessingSecurityScopedResource()
-            activeURLs.removeValue(forKey: url)
+        let k = key(for: url)
+        guard var entry = active[k] else { return }
+        if entry.count <= 1 {
+            entry.url.stopAccessingSecurityScopedResource()
+            active.removeValue(forKey: k)
         } else {
-            activeURLs[url] = count - 1
+            entry.count -= 1
+            active[k] = entry
         }
     }
 
     func stopAll() {
-        for (url, _) in activeURLs {
-            url.stopAccessingSecurityScopedResource()
+        for (_, entry) in active {
+            entry.url.stopAccessingSecurityScopedResource()
         }
-        activeURLs.removeAll()
+        active.removeAll()
     }
 
-    var isAccessing: Bool { !activeURLs.isEmpty }
+    var isAccessing: Bool { !active.isEmpty }
+
+    func isAccessing(_ url: URL) -> Bool {
+        active[key(for: url)] != nil
+    }
 
     deinit {
         // Inline cleanup — deinit is nonisolated and cannot call @MainActor methods.
-        for (url, _) in activeURLs {
-            url.stopAccessingSecurityScopedResource()
+        for (_, entry) in active {
+            entry.url.stopAccessingSecurityScopedResource()
         }
-        activeURLs.removeAll()
+        active.removeAll()
     }
 }
 
@@ -177,7 +211,7 @@ final class StorageResolver {
 
     private let defaults: BookmarkStorage
     private let bookmarkProvider: BookmarkProvider
-    let securityAccess: SecurityScopedAccess
+    let securityAccess: SecurityScopedAccessing
     let fileManager: FileManager
 
     private var cachedResolvedURL: URL?
@@ -186,7 +220,7 @@ final class StorageResolver {
     init(
         defaults: BookmarkStorage = UserDefaults.standard,
         bookmarkProvider: BookmarkProvider? = nil,
-        securityAccess: SecurityScopedAccess? = nil,
+        securityAccess: SecurityScopedAccessing? = nil,
         fileManager: FileManager = .default
     ) {
         self.defaults = defaults
@@ -205,6 +239,7 @@ final class StorageResolver {
         return cachedResolvedURL != nil
     }
 
+    /// Bookmarked root folder only. Never a date subfolder or file path.
     var screenshotFolderURL: URL? {
         if cachedIsStale {
             reloadBookmark()
@@ -212,14 +247,55 @@ final class StorageResolver {
         return cachedResolvedURL
     }
 
+    /// Last known path string for UI/migration only — not a security-scoped grant.
+    var displayPathHint: String? {
+        if let url = screenshotFolderURL {
+            return url.path
+        }
+        return defaults.loadString(forKey: Self.folderPathKey)
+            ?? defaults.loadString(forKey: Self.oldPathDefaultsKey)
+    }
+
+    /// Persist a security-scoped bookmark from an `NSOpenPanel` (or equivalent) URL.
     func saveBookmark(for url: URL) throws {
-        let data = try bookmarkProvider.createBookmarkData(from: url)
+        // Panel URLs are already security-scoped; hold access while creating the bookmark.
+        let heldPanel = securityAccess.startAccessing(url)
+
+        let data: Data
+        do {
+            data = try bookmarkProvider.createBookmarkData(from: url)
+        } catch {
+            if heldPanel { securityAccess.stopAccessing(url) }
+            throw StorageError.bookmarkCreationFailed(error)
+        }
+
+        // Resolve immediately so we store/use the same scoped URL the system returns.
+        let resolved: URL
+        let isStale: Bool
+        do {
+            (resolved, isStale) = try bookmarkProvider.resolveBookmarkData(data)
+        } catch {
+            if heldPanel { securityAccess.stopAccessing(url) }
+            throw StorageError.bookmarkResolutionFailed(error)
+        }
+
+        if heldPanel {
+            securityAccess.stopAccessing(url)
+        }
+        securityAccess.stopAll()
+
         defaults.saveBookmarkData(data, forKey: Self.bookmarkDefaultsKey)
-        defaults.saveString(url.path, forKey: Self.folderPathKey)
+        defaults.saveString(resolved.path, forKey: Self.folderPathKey)
         defaults.removeObject(forKey: Self.oldPathDefaultsKey)
-        cachedResolvedURL = url
-        cachedIsStale = false
-        _ = securityAccess.startAccessing(url)
+
+        cachedResolvedURL = resolved.standardizedFileURL
+        cachedIsStale = isStale
+
+        guard securityAccess.startAccessing(resolved) else {
+            cachedResolvedURL = nil
+            cachedIsStale = false
+            throw StorageError.securityScopedAccessDenied
+        }
     }
 
     func clearBookmark() {
@@ -230,27 +306,44 @@ final class StorageResolver {
         securityAccess.stopAll()
     }
 
-    func prepareFolder() throws -> URL {
-        guard let url = screenshotFolderURL else {
+    /// Opens security-scoped access on the **bookmark root** only.
+    /// Call this before any read/write under the screenshot folder tree.
+    /// Do **not** call `startAccessing` on child date folders or files.
+    @discardableResult
+    func accessFolder() throws -> URL {
+        if cachedIsStale {
+            reloadBookmark()
+        }
+        guard let url = cachedResolvedURL else {
             throw StorageError.folderNotSelected
         }
-        guard securityAccess.startAccessing(url) else {
+        if securityAccess.startAccessing(url) {
+            return url
+        }
+
+        // One recovery pass: re-resolve bookmark data (handles stale scope).
+        reloadBookmark()
+        guard let retried = cachedResolvedURL else {
+            throw StorageError.bookmarkIsInvalid
+        }
+        guard securityAccess.startAccessing(retried) else {
             throw StorageError.securityScopedAccessDenied
         }
+        return retried
+    }
+
+    /// Non-throwing convenience for UI paths that only need a Bool.
+    @discardableResult
+    func ensureFolderAccess() -> Bool {
+        (try? accessFolder()) != nil
+    }
+
+    func prepareFolder() throws -> URL {
+        let url = try accessFolder()
         do {
             try fileManager.createDirectory(at: url, withIntermediateDirectories: true)
         } catch {
             throw StorageError.folderCreationFailed(error)
-        }
-        return url
-    }
-
-    func accessFolder() throws -> URL {
-        guard let url = screenshotFolderURL else {
-            throw StorageError.folderNotSelected
-        }
-        guard securityAccess.startAccessing(url) else {
-            throw StorageError.securityScopedAccessDenied
         }
         return url
     }
@@ -288,57 +381,64 @@ final class StorageResolver {
     // MARK: - Private
 
     private func loadBookmark() {
+        // Drop previous security scopes before rebinding.
+        securityAccess.stopAll()
+
         if let data = defaults.loadBookmarkData(forKey: Self.bookmarkDefaultsKey) {
             do {
                 let (url, isStale) = try bookmarkProvider.resolveBookmarkData(data)
-                cachedResolvedURL = url
-                cachedIsStale = isStale
-                if !isStale {
-                    _ = securityAccess.startAccessing(url)
-                    defaults.saveString(url.path, forKey: Self.folderPathKey)
-                } else {
-                    if let newData = try? bookmarkProvider.createBookmarkData(from: url) {
+                let standardized = url.standardizedFileURL
+
+                if isStale {
+                    // Need live access to refresh a stale bookmark, then re-resolve.
+                    if securityAccess.startAccessing(standardized),
+                       let newData = try? bookmarkProvider.createBookmarkData(from: standardized) {
                         defaults.saveBookmarkData(newData, forKey: Self.bookmarkDefaultsKey)
-                        defaults.saveString(url.path, forKey: Self.folderPathKey)
+                        if let (fresh, stillStale) = try? bookmarkProvider.resolveBookmarkData(newData),
+                           !stillStale {
+                            securityAccess.stopAll()
+                            let freshStd = fresh.standardizedFileURL
+                            if securityAccess.startAccessing(freshStd) {
+                                defaults.saveString(freshStd.path, forKey: Self.folderPathKey)
+                                cachedResolvedURL = freshStd
+                                cachedIsStale = false
+                                return
+                            }
+                        }
+                        // Fall back to the URL we could still open.
+                        defaults.saveString(standardized.path, forKey: Self.folderPathKey)
+                        cachedResolvedURL = standardized
+                        cachedIsStale = false
+                        return
                     }
+                    // Stale and unusable — force re-select rather than pretend we have access.
+                    cachedResolvedURL = nil
+                    cachedIsStale = false
+                    defaults.saveString(standardized.path, forKey: Self.folderPathKey)
+                    return
                 }
+
+                // Fresh bookmark: require successful root scope open.
+                guard securityAccess.startAccessing(standardized) else {
+                    // Keep path for UI hint, but do not mark folder valid without scope.
+                    defaults.saveString(standardized.path, forKey: Self.folderPathKey)
+                    cachedResolvedURL = nil
+                    cachedIsStale = false
+                    return
+                }
+
+                cachedResolvedURL = standardized
+                cachedIsStale = false
+                defaults.saveString(standardized.path, forKey: Self.folderPathKey)
                 return
             } catch {
                 defaults.removeBookmarkData(forKey: Self.bookmarkDefaultsKey)
             }
         }
 
-        // Fallback 1: Saved path from user settings
-        if let savedPath = defaults.loadString(forKey: Self.folderPathKey), !savedPath.isEmpty {
-            let expandedPath = (savedPath as NSString).expandingTildeInPath
-            let url = URL(fileURLWithPath: expandedPath)
-            if fileManager.fileExists(atPath: url.path) {
-                cachedResolvedURL = url
-                cachedIsStale = false
-                _ = securityAccess.startAccessing(url)
-                if let newData = try? bookmarkProvider.createBookmarkData(from: url) {
-                    defaults.saveBookmarkData(newData, forKey: Self.bookmarkDefaultsKey)
-                }
-                return
-            }
-        }
-
-        // Fallback 2: Old path key migration
-        if let oldPath = defaults.loadString(forKey: Self.oldPathDefaultsKey), !oldPath.isEmpty {
-            let expandedPath = (oldPath as NSString).expandingTildeInPath
-            let url = URL(fileURLWithPath: expandedPath)
-            if fileManager.fileExists(atPath: url.path) {
-                cachedResolvedURL = url
-                cachedIsStale = false
-                _ = securityAccess.startAccessing(url)
-                if let newData = try? bookmarkProvider.createBookmarkData(from: url) {
-                    defaults.saveBookmarkData(newData, forKey: Self.bookmarkDefaultsKey)
-                    defaults.saveString(url.path, forKey: Self.folderPathKey)
-                }
-                return
-            }
-        }
-
+        // Path-only keys are NOT a sandbox grant. Never set cachedResolvedURL from
+        // a plain path — that caused "has folder" UI while every access failed.
+        // Keep strings for migration / display hints only.
         cachedResolvedURL = nil
         cachedIsStale = false
     }
@@ -391,6 +491,39 @@ final class MockBookmarkStorage: BookmarkStorage {
     func removeObject(forKey key: String) {
         dataStore.removeValue(forKey: key)
         stringStore.removeValue(forKey: key)
+    }
+}
+
+/// Always succeeds — unit tests run without real sandbox scopes.
+@MainActor
+final class MockSecurityScopedAccess: SecurityScopedAccessing {
+    private var paths: [String: Int] = [:]
+
+    @discardableResult
+    func startAccessing(_ url: URL) -> Bool {
+        let key = url.standardizedFileURL.path
+        paths[key, default: 0] += 1
+        return true
+    }
+
+    func stopAccessing(_ url: URL) {
+        let key = url.standardizedFileURL.path
+        guard let count = paths[key] else { return }
+        if count <= 1 {
+            paths.removeValue(forKey: key)
+        } else {
+            paths[key] = count - 1
+        }
+    }
+
+    func stopAll() {
+        paths.removeAll()
+    }
+
+    var isAccessing: Bool { !paths.isEmpty }
+
+    func isAccessing(_ url: URL) -> Bool {
+        paths[url.standardizedFileURL.path] != nil
     }
 }
 #endif

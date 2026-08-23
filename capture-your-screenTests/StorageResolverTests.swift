@@ -69,11 +69,16 @@ final class StorageResolverTests: XCTestCase {
         mockProvider.onCreate = { _ in bookmarkData }
         mockProvider.onResolve = { _ in (testURL, false) }
 
-        let resolver = StorageResolver(defaults: mockStorage, bookmarkProvider: mockProvider)
+        let resolver = StorageResolver(
+            defaults: mockStorage,
+            bookmarkProvider: mockProvider,
+            securityAccess: MockSecurityScopedAccess()
+        )
         try? resolver.saveBookmark(for: testURL)
 
         XCTAssertTrue(resolver.hasValidFolder)
-        XCTAssertEqual(resolver.screenshotFolderURL, testURL)
+        XCTAssertEqual(resolver.screenshotFolderURL, testURL.standardizedFileURL)
+        XCTAssertTrue(resolver.ensureFolderAccess())
     }
 
     func testCorruptedBookmarkData_doesNotCrash() {
@@ -87,7 +92,11 @@ final class StorageResolverTests: XCTestCase {
 
         mockStorage.saveBookmarkData(corruptedData, forKey: StorageResolver.bookmarkDefaultsKey)
 
-        let resolver = StorageResolver(defaults: mockStorage, bookmarkProvider: mockProvider)
+        let resolver = StorageResolver(
+            defaults: mockStorage,
+            bookmarkProvider: mockProvider,
+            securityAccess: MockSecurityScopedAccess()
+        )
 
         XCTAssertNil(resolver.screenshotFolderURL)
         XCTAssertFalse(resolver.hasValidFolder)
@@ -113,13 +122,17 @@ final class StorageResolverTests: XCTestCase {
             return (newURL, false)
         }
 
-        let resolver = StorageResolver(defaults: mockStorage, bookmarkProvider: mockProvider)
+        let resolver = StorageResolver(
+            defaults: mockStorage,
+            bookmarkProvider: mockProvider,
+            securityAccess: MockSecurityScopedAccess()
+        )
 
         try? resolver.saveBookmark(for: oldURL)
-        XCTAssertEqual(resolver.screenshotFolderURL, oldURL)
+        XCTAssertEqual(resolver.screenshotFolderURL, oldURL.standardizedFileURL)
 
         try? resolver.saveBookmark(for: newURL)
-        XCTAssertEqual(resolver.screenshotFolderURL, newURL)
+        XCTAssertEqual(resolver.screenshotFolderURL, newURL.standardizedFileURL)
     }
 
     // MARK: - Old Path Migration
@@ -131,10 +144,19 @@ final class StorageResolverTests: XCTestCase {
         mockProvider.onResolve = { _ in
             throw NSError(domain: "bookmark", code: -1, userInfo: nil)
         }
+        // Plain path without a valid bookmark must never become a grant.
+        mockStorage.saveString("/Users/test/OldScreenshots", forKey: StorageResolver.oldPathDefaultsKey)
+        mockStorage.saveString("/Users/test/OldScreenshots", forKey: StorageResolver.folderPathKey)
 
-        let resolver = StorageResolver(defaults: mockStorage, bookmarkProvider: mockProvider)
+        let resolver = StorageResolver(
+            defaults: mockStorage,
+            bookmarkProvider: mockProvider,
+            securityAccess: MockSecurityScopedAccess()
+        )
 
         XCTAssertFalse(resolver.hasValidFolder)
+        XCTAssertNil(resolver.screenshotFolderURL)
+        XCTAssertEqual(resolver.displayPathHint, "/Users/test/OldScreenshots")
         // After migration shown, there should be no auto-access
         resolver.markMigrationShown()
         XCTAssertFalse(resolver.hasValidFolder)
@@ -145,7 +167,11 @@ final class StorageResolverTests: XCTestCase {
     func testScreenshotStore_withoutFolder_returnsError() {
         let mockStorage = MockBookmarkStorage()
         let mockProvider = MockBookmarkProvider()
-        let resolver = StorageResolver(defaults: mockStorage, bookmarkProvider: mockProvider)
+        let resolver = StorageResolver(
+            defaults: mockStorage,
+            bookmarkProvider: mockProvider,
+            securityAccess: MockSecurityScopedAccess()
+        )
 
         XCTAssertThrowsError(try resolver.prepareFolder()) { error in
             guard let storageError = error as? StorageError else {
@@ -179,10 +205,31 @@ final class StorageResolverTests: XCTestCase {
 
         mockStorage.saveBookmarkData(bookmarkData, forKey: StorageResolver.bookmarkDefaultsKey)
 
-        let resolver = StorageResolver(defaults: mockStorage, bookmarkProvider: mockProvider)
+        let resolver = StorageResolver(
+            defaults: mockStorage,
+            bookmarkProvider: mockProvider,
+            securityAccess: MockSecurityScopedAccess()
+        )
 
         XCTAssertTrue(resolver.hasValidFolder)
-        XCTAssertEqual(resolver.screenshotFolderURL, freshURL)
+        XCTAssertEqual(resolver.screenshotFolderURL, freshURL.standardizedFileURL)
+        XCTAssertNoThrow(try resolver.accessFolder())
+    }
+
+    func testAccessFolder_opensRootNotChild() throws {
+        let resolver = makeResolver()
+        let folderURL = URL(fileURLWithPath: "/Users/test/Screenshots")
+        try resolver.saveBookmark(for: folderURL)
+
+        let accessed = try resolver.accessFolder()
+        XCTAssertEqual(accessed.standardizedFileURL, folderURL.standardizedFileURL)
+        XCTAssertTrue(resolver.securityAccess.isAccessing(folderURL))
+        // Child paths are allowed for I/O after root access; they are not separate scopes.
+        XCTAssertTrue(
+            resolver.isFileInScreenshotFolder(
+                folderURL.appendingPathComponent("2026-01-01/Screenshot_x.png")
+            )
+        )
     }
 
     // MARK: - Helpers
@@ -191,14 +238,26 @@ final class StorageResolverTests: XCTestCase {
         let mockStorage = MockBookmarkStorage()
         let mockProvider = MockBookmarkProvider()
         let bookmarkData = "dummy".data(using: .utf8)!
-        mockProvider.onCreate = { _ in bookmarkData }
-        mockProvider.onResolve = { _ in (URL(fileURLWithPath: "/tmp"), false) }
-        return StorageResolver(defaults: mockStorage, bookmarkProvider: mockProvider)
+        var lastURL = URL(fileURLWithPath: "/tmp")
+        mockProvider.onCreate = { url in
+            lastURL = url
+            return bookmarkData
+        }
+        mockProvider.onResolve = { _ in (lastURL, false) }
+        return StorageResolver(
+            defaults: mockStorage,
+            bookmarkProvider: mockProvider,
+            securityAccess: MockSecurityScopedAccess()
+        )
     }
 
     private func makeResolverWithoutBookmark() -> StorageResolver {
         let mockStorage = MockBookmarkStorage()
         let mockProvider = MockBookmarkProvider()
-        return StorageResolver(defaults: mockStorage, bookmarkProvider: mockProvider)
+        return StorageResolver(
+            defaults: mockStorage,
+            bookmarkProvider: mockProvider,
+            securityAccess: MockSecurityScopedAccess()
+        )
     }
 }

@@ -39,6 +39,15 @@ final class CaptureCoordinator: ObservableObject {
     var successDismissDelay: TimeInterval = 0.7
 
     private var overlayWindow: OverlayWindow?
+    /// Full-display freeze-frame captured *before* the overlay appears so
+    /// transient UI (menus / popovers) survives confirm clicks.
+    private var frozenCaptureImage: NSImage?
+    /// Screen whose logical size matches `frozenCaptureImage`.
+    private var frozenCaptureScreen: NSScreen?
+    /// Current screen-local selection shared with the global key handler.
+    private var currentCaptureSelection: CGRect?
+    /// Front-to-back window geometry sampled with the freeze-frame.
+    private var frozenWindowCandidates: [CaptureWindowCandidate] = []
     /// Monotonic token that invalidates in-flight capture tasks when a
     /// capture is cancelled or a new one starts.
     private var captureGeneration: UInt64 = 0
@@ -90,8 +99,14 @@ final class CaptureCoordinator: ObservableObject {
         // A capture is already waiting for a decision — surface its panel
         // instead of silently dropping the hotkey press.
         if state == .reviewing {
-            panelPresenter.presentedWindow?.makeKeyAndOrderFront(nil)
-            NSApp.activate(ignoringOtherApps: true)
+            if let session = activeSession {
+                if panelPresenter.isPresenting {
+                    panelPresenter.presentedWindow?.makeKeyAndOrderFront(nil)
+                } else {
+                    presentPanel(for: session)
+                }
+            }
+            // Do NOT activate — the panel just needs to be visible/key.
             return
         }
         guard state == .idle else { return }
@@ -115,10 +130,67 @@ final class CaptureCoordinator: ObservableObject {
         guard let screen = activeCaptureScreen() else { return }
 
         captureGeneration &+= 1
+        let generation = captureGeneration
         state = .capturing
+        clearFrozenCapture()
+        frozenWindowCandidates = CaptureWindowSelection.snapshot(on: screen)
+        let localPointer = CaptureWindowSelection.screenLocalPoint(fromCocoaGlobal: NSEvent.mouseLocation, on: screen)
+        currentCaptureSelection = CaptureWindowSelection.selectionRect(
+            at: localPointer,
+            candidates: frozenWindowCandidates,
+            screenSize: screen.frame.size
+        )
+        hotkeyManager.beginCaptureKeyInterception { [weak self] command in
+            Task { @MainActor in
+                self?.handleCaptureKeyCommand(command, screen: screen)
+            }
+        }
+
+        // Freeze the live display *before* showing the overlay. Confirm /
+        // Quick Save clicks would otherwise dismiss menus/popovers before a
+        // second live capture could see them.
+        Task { [weak self] in
+            do {
+                let frozen = try await ScreenCapture.captureFullDisplay(displayID: screen.directDisplayID)
+                guard let self, self.captureGeneration == generation, self.state == .capturing else { return }
+                self.presentSelectionOverlay(screen: screen, frozenImage: frozen)
+            } catch {
+                guard let self, self.captureGeneration == generation else { return }
+                logger.error("Freeze-frame capture failed: \(error.localizedDescription, privacy: .public)")
+                self.lastError = error
+                self.clearFrozenCapture()
+                self.hotkeyManager.endCaptureKeyInterception()
+                self.currentCaptureSelection = nil
+                self.notifier.postNotification(
+                    title: PostCaptureStrings.captureFailedNotificationTitle,
+                    body: error.localizedDescription
+                )
+                self.state = .idle
+            }
+        }
+    }
+
+    func cancelCapture() {
+        guard case .capturing = state else { return }
+        captureGeneration &+= 1
+        closeOverlayWindow()
+        clearFrozenCapture()
+        hotkeyManager.endCaptureKeyInterception()
+        currentCaptureSelection = nil
+        state = .idle
+    }
+
+    // MARK: - Selection overlay (on frozen frame)
+
+    private func presentSelectionOverlay(screen: NSScreen, frozenImage: NSImage) {
+        frozenCaptureImage = frozenImage
+        frozenCaptureScreen = screen
 
         let window = OverlayWindow(screen: screen)
         let overlayView = SelectionOverlayView(
+            frozenImage: frozenImage,
+            initialSelection: currentCaptureSelection,
+            windowCandidates: frozenWindowCandidates,
             onConfirm: { [weak self] rect in
                 self?.finishCapture(selectionRect: rect, screen: screen)
             },
@@ -128,57 +200,47 @@ final class CaptureCoordinator: ObservableObject {
             onCancel: { [weak self] in
                 self?.cancelCapture()
             },
+            onSelectionChanged: { [weak self] rect in
+                self?.currentCaptureSelection = rect
+            },
             screen: screen,
             hotkeyConfig: hotkeyManager.currentConfig
         )
-        let hostingView = KeyboardAcceptingHostingView(rootView: overlayView)
+        let hostingView = NSHostingView(rootView: overlayView)
         hostingView.frame = window.contentRect(forFrameRect: window.frame)
         window.contentView = hostingView
         window.makeKeyAndOrderFront(nil)
-        window.makeFirstResponder(hostingView)
-        NSApp.activate(ignoringOtherApps: true)
+        // NOTE: We intentionally do NOT call NSApp.activate(ignoringOtherApps:).
+        // Freeze-frame capture already preserved transient UI; avoiding activate
+        // still helps while the overlay is up.
 
         self.overlayWindow = window
     }
 
-    func cancelCapture() {
-        guard case .capturing = state else { return }
-        captureGeneration &+= 1
-        closeOverlayWindow()
-        state = .idle
-    }
-
-    // MARK: - Selection → capture
+    // MARK: - Selection → crop frozen frame (no second live capture)
 
     private func finishCapture(selectionRect: CGRect, screen: NSScreen) {
         guard case .capturing = state else { return }
+        hotkeyManager.endCaptureKeyInterception()
+        currentCaptureSelection = nil
         closeOverlayWindow()
 
         let captureRect = selectionRect.integral
-        performCapture(rect: captureRect, screen: screen)
-    }
-
-    private func performCapture(rect: CGRect, screen: NSScreen) {
-        let generation = captureGeneration
-        let displayID = screen.directDisplayID
-
-        Task { [weak self] in
-            do {
-                let image = try await ScreenCapture.captureRegion(rect, displayID: displayID)
-                guard let self, self.captureGeneration == generation, self.state == .capturing else { return }
-                self.lastError = nil
-                self.beginReview(image: image, sourceDisplayID: displayID, selectionRect: rect)
-            } catch {
-                guard let self, self.captureGeneration == generation else { return }
-                logger.error("Capture failed: \(error.localizedDescription, privacy: .public)")
-                self.lastError = error
-                self.notifier.postNotification(
-                    title: PostCaptureStrings.captureFailedNotificationTitle,
-                    body: error.localizedDescription
-                )
-                self.state = .idle
-            }
+        guard let image = croppedImageFromFrozenFrame(rect: captureRect, screen: screen) else {
+            logger.error("Failed to crop freeze-frame for confirm")
+            lastError = ScreenCaptureError.captureFailed
+            clearFrozenCapture()
+            notifier.postNotification(
+                title: PostCaptureStrings.captureFailedNotificationTitle,
+                body: ScreenCaptureError.captureFailed.localizedDescription
+            )
+            state = .idle
+            return
         }
+
+        lastError = nil
+        clearFrozenCapture()
+        beginReview(image: image, sourceDisplayID: screen.directDisplayID, selectionRect: captureRect)
     }
 
     // MARK: - Review session
@@ -385,30 +447,44 @@ final class CaptureCoordinator: ObservableObject {
     private func quickSaveCapture(selectionRect: CGRect, screen: NSScreen) {
         guard case .capturing = state else { return }
         state = .saving
+        hotkeyManager.endCaptureKeyInterception()
+        currentCaptureSelection = nil
         closeOverlayWindow()
 
-        let generation = captureGeneration
-        let displayID = screen.directDisplayID
-
-        Task { [weak self] in
-            do {
-                let image = try await ScreenCapture.captureRegion(
-                    selectionRect.integral,
-                    displayID: displayID
-                )
-                guard let self, self.captureGeneration == generation else { return }
-                await self.performQuickSaveCompletion(image: image)
-            } catch {
-                guard let self, self.captureGeneration == generation else { return }
-                logger.error("Quick save failed: \(error.localizedDescription, privacy: .public)")
-                self.lastError = error
-                self.notifier.postNotification(
-                    title: PostCaptureStrings.saveFailedNotificationTitle,
-                    body: error.localizedDescription
-                )
-                self.state = .idle
-            }
+        let captureRect = selectionRect.integral
+        guard let image = croppedImageFromFrozenFrame(rect: captureRect, screen: screen) else {
+            logger.error("Failed to crop freeze-frame for quick save")
+            lastError = ScreenCaptureError.captureFailed
+            clearFrozenCapture()
+            notifier.postNotification(
+                title: PostCaptureStrings.saveFailedNotificationTitle,
+                body: ScreenCaptureError.captureFailed.localizedDescription
+            )
+            state = .idle
+            return
         }
+
+        clearFrozenCapture()
+        actionTask = Task { [weak self] in
+            await self?.performQuickSaveCompletion(image: image)
+        }
+    }
+
+    /// Crops the pre-captured freeze-frame. Never performs a second live capture.
+    private func croppedImageFromFrozenFrame(rect: CGRect, screen: NSScreen) -> NSImage? {
+        guard let frozen = frozenCaptureImage else { return nil }
+        let logicalSize = (frozenCaptureScreen ?? screen).frame.size
+        return ScreenshotCropping.crop(
+            image: frozen,
+            toScreenLocalRect: rect,
+            logicalScreenSize: logicalSize
+        )
+    }
+
+    private func clearFrozenCapture() {
+        frozenCaptureImage = nil
+        frozenCaptureScreen = nil
+        frozenWindowCandidates = []
     }
 
     /// Copy + save + notify, bypassing the review panel entirely.
@@ -524,6 +600,9 @@ final class CaptureCoordinator: ObservableObject {
     private func clearSessionToIdle() {
         activeSession = nil
         isProcessingAction = false
+        clearFrozenCapture()
+        hotkeyManager.endCaptureKeyInterception()
+        currentCaptureSelection = nil
         state = .idle
     }
 
@@ -535,4 +614,29 @@ final class CaptureCoordinator: ObservableObject {
             ?? NSScreen.main
             ?? NSScreen.screens.first
     }
+
+    private func handleCaptureKeyCommand(_ command: CaptureKeyCommand, screen: NSScreen) {
+        guard state == .capturing else { return }
+        switch command {
+        case .cancel:
+            cancelCapture()
+        case .confirm:
+            guard let rect = validCaptureSelection else {
+                cancelCapture()
+                return
+            }
+            finishCapture(selectionRect: rect, screen: screen)
+        case .quickSave:
+            guard let rect = validCaptureSelection else { return }
+            quickSaveCapture(selectionRect: rect, screen: screen)
+        }
+    }
+
+    private var validCaptureSelection: CGRect? {
+        guard let rect = currentCaptureSelection,
+              rect.width >= 10,
+              rect.height >= 10 else { return nil }
+        return rect
+    }
+
 }

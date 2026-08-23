@@ -38,7 +38,7 @@ final class AnnotationEditorPresenter: NSObject, AnnotationEditorPresenting, NSW
         self.systemCloseHandler = handlers.onCancel
 
         window.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
+        // Intentionally no NSApp.activate — key status is enough.
     }
 
     func dismiss() {

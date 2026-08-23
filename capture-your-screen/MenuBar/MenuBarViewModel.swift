@@ -130,18 +130,17 @@ final class MenuBarViewModel: ObservableObject {
     }
 
     func openScreenshotFolder() {
-        guard let folderURL = screenshotStore.resolver.screenshotFolderURL else {
-            showError("No folder selected. Please choose a folder in Settings.")
-            return
-        }
-
-        guard screenshotStore.resolver.securityAccess.startAccessing(folderURL) else {
-            showError("Cannot access the screenshot folder. Please re-select it in Settings.")
+        let folderURL: URL
+        do {
+            folderURL = try screenshotStore.resolver.accessFolder()
+        } catch {
+            showError(error.localizedDescription)
             return
         }
 
         let folderFormatter = DateFormatter()
         folderFormatter.dateFormat = "yyyy-MM-dd"
+        folderFormatter.locale = Locale(identifier: "en_US_POSIX")
         let dateFolderName = folderFormatter.string(from: Date())
         let todayFolderURL = folderURL.appendingPathComponent(dateFolderName, isDirectory: true)
         let targetURL = FileManager.default.fileExists(atPath: todayFolderURL.path) ? todayFolderURL : folderURL
@@ -196,12 +195,14 @@ final class MenuBarViewModel: ObservableObject {
             showError("File is not in the screenshots folder.")
             return
         }
-        guard FileManager.default.fileExists(atPath: item.url.path) else {
-            showError("File not found.")
+        do {
+            _ = try screenshotStore.resolver.accessFolder()
+        } catch {
+            showError(error.localizedDescription)
             return
         }
-        guard screenshotStore.resolver.securityAccess.startAccessing(item.url.deletingLastPathComponent()) else {
-            showError("Cannot access file location.")
+        guard FileManager.default.fileExists(atPath: item.url.path) else {
+            showError("File not found.")
             return
         }
         NSWorkspace.shared.activateFileViewerSelecting([item.url])
@@ -436,8 +437,16 @@ final class MenuBarViewModel: ObservableObject {
     }
 
     private func copyScreenshotAsync(at url: URL) async {
-        guard screenshotStore.resolver.securityAccess.startAccessing(url.deletingLastPathComponent()) else {
-            showError("Could not copy — file access denied.")
+        // Security scope must be opened on the bookmarked **root**, not the day subfolder.
+        do {
+            _ = try screenshotStore.resolver.accessFolder()
+        } catch {
+            showError(error.localizedDescription)
+            return
+        }
+
+        guard screenshotStore.resolver.isFileInScreenshotFolder(url) else {
+            showError("Could not copy — file is outside the screenshots folder.")
             return
         }
 
