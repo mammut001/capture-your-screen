@@ -22,3 +22,4 @@ fi
 
 "$HELPER" --self-test
 echo "Built and self-tested: $HELPER"
+echo "Artifact: $HELPER"

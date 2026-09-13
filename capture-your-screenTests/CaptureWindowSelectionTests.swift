@@ -5,6 +5,28 @@ import CoreGraphics
 final class CaptureWindowSelectionTests: XCTestCase {
     private let screenFrame = CGRect(x: 0, y: 0, width: 1440, height: 900)
 
+    /// Structural: overlay must wire the AppKit mouse monitor (not only SwiftUI hover).
+    func testSelectionOverlaySourceUsesMouseMoveMonitor() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent() // Tests/
+            .deletingLastPathComponent() // repo
+        let overlaySource = root
+            .appendingPathComponent("capture-your-screen/Capture/SelectionOverlayView.swift")
+        let source = try String(contentsOf: overlaySource, encoding: .utf8)
+        XCTAssertTrue(
+            source.contains("OverlayMouseMoveMonitor"),
+            "SelectionOverlayView must install OverlayMouseMoveMonitor for click-free hover"
+        )
+        XCTAssertTrue(
+            source.contains("OverlayHoverSession"),
+            "SelectionOverlayView must drive OverlayHoverSession for pointer moves"
+        )
+        XCTAssertFalse(
+            source.contains("onContinuousHover"),
+            "onContinuousHover requires a priming click when inactive — must not be the hover path"
+        )
+    }
+
     func testCandidatesFilterOwnTransparentAndOffscreenWindows() {
         let infos = [
             windowInfo(id: 1, pid: 99, bounds: CGRect(x: 10, y: 10, width: 300, height: 200)),
@@ -62,6 +84,85 @@ final class CaptureWindowSelectionTests: XCTestCase {
         )
 
         XCTAssertEqual(selected, window.screenLocalBounds)
+    }
+
+    // MARK: - OverlayHoverSession (no priming click)
+
+    func testHoverSession_firstMoveWithoutClickSnapsToWindow() {
+        let windowA = candidate(id: 1, pid: 10, layer: 0, rect: CGRect(x: 40, y: 60, width: 400, height: 300), order: 0)
+        let windowB = candidate(id: 2, pid: 11, layer: 0, rect: CGRect(x: 500, y: 60, width: 400, height: 300), order: 1)
+        var session = OverlayHoverSession()
+
+        // First pointer move — no prior click / finalize.
+        let changed = session.pointerMoved(
+            to: CGPoint(x: 100, y: 100),
+            candidates: [windowA, windowB],
+            screenSize: screenFrame.size
+        )
+
+        XCTAssertTrue(changed)
+        XCTAssertEqual(session.selection, windowA.screenLocalBounds)
+        XCTAssertEqual(session.lastHoverLocation, CGPoint(x: 100, y: 100))
+        XCTAssertFalse(session.isSelectionFinalized)
+    }
+
+    func testHoverSession_sequenceOfMovesUpdatesProposal() {
+        let windowA = candidate(id: 1, pid: 10, layer: 0, rect: CGRect(x: 40, y: 60, width: 400, height: 300), order: 0)
+        let windowB = candidate(id: 2, pid: 11, layer: 0, rect: CGRect(x: 500, y: 60, width: 400, height: 300), order: 1)
+        var session = OverlayHoverSession()
+        let candidates = [windowA, windowB]
+
+        _ = session.pointerMoved(to: CGPoint(x: 100, y: 100), candidates: candidates, screenSize: screenFrame.size)
+        XCTAssertEqual(session.selection, windowA.screenLocalBounds)
+
+        _ = session.pointerMoved(to: CGPoint(x: 600, y: 120), candidates: candidates, screenSize: screenFrame.size)
+        XCTAssertEqual(session.selection, windowB.screenLocalBounds)
+    }
+
+    func testHoverSession_finalizedIgnoresMovesUntilUnlock() {
+        let windowA = candidate(id: 1, pid: 10, layer: 0, rect: CGRect(x: 40, y: 60, width: 400, height: 300), order: 0)
+        let windowB = candidate(id: 2, pid: 11, layer: 0, rect: CGRect(x: 500, y: 60, width: 400, height: 300), order: 1)
+        var session = OverlayHoverSession()
+        let candidates = [windowA, windowB]
+
+        _ = session.pointerMoved(to: CGPoint(x: 100, y: 100), candidates: candidates, screenSize: screenFrame.size)
+        session.isSelectionFinalized = true
+
+        let ignored = session.pointerMoved(
+            to: CGPoint(x: 600, y: 120),
+            candidates: candidates,
+            screenSize: screenFrame.size
+        )
+        XCTAssertFalse(ignored)
+        XCTAssertEqual(session.selection, windowA.screenLocalBounds)
+
+        session.unlock(candidates: candidates, screenSize: screenFrame.size)
+        XCTAssertFalse(session.isSelectionFinalized)
+        // Unlock restores from lastHoverLocation (still over A).
+        XCTAssertEqual(session.selection, windowA.screenLocalBounds)
+
+        // Immediate re-hover after unlock (simulates post–Cmd+E / X without click).
+        _ = session.pointerMoved(to: CGPoint(x: 600, y: 120), candidates: candidates, screenSize: screenFrame.size)
+        XCTAssertEqual(session.selection, windowB.screenLocalBounds)
+    }
+
+    func testHoverSession_draggingSuppressesHoverUpdates() {
+        let windowA = candidate(id: 1, pid: 10, layer: 0, rect: CGRect(x: 40, y: 60, width: 400, height: 300), order: 0)
+        let windowB = candidate(id: 2, pid: 11, layer: 0, rect: CGRect(x: 500, y: 60, width: 400, height: 300), order: 1)
+        var session = OverlayHoverSession(
+            selection: windowA.screenLocalBounds,
+            lastHoverLocation: CGPoint(x: 100, y: 100),
+            isSelectionFinalized: false,
+            isDragging: true
+        )
+
+        let ignored = session.pointerMoved(
+            to: CGPoint(x: 600, y: 120),
+            candidates: [windowA, windowB],
+            screenSize: screenFrame.size
+        )
+        XCTAssertFalse(ignored)
+        XCTAssertEqual(session.selection, windowA.screenLocalBounds)
     }
 
     private func candidate(id: CGWindowID, pid: pid_t, layer: Int, rect: CGRect, order: Int) -> CaptureWindowCandidate {

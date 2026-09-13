@@ -3,7 +3,6 @@ import os
 
 private let logger = Logger(subsystem: "com.captureyourscreen.helper", category: "SelfTest")
 
-#if DEBUG
 enum CLIArgumentsSelfTest {
     static func run() -> Bool {
         var failures: [String] = []
@@ -71,4 +70,3 @@ enum CLIArgumentsSelfTest {
         return false
     }
 }
-#endif

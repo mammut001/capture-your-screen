@@ -139,3 +139,49 @@ enum CaptureWindowSelection {
         return min(abs(x - rect.minX), abs(x - rect.maxX))
     }
 }
+
+/// Mutable hover/lock state for the selection overlay.
+/// Pointer moves update the proposal **without** requiring a priming click;
+/// lock / drag gates suppress hover until unlock.
+struct OverlayHoverSession: Equatable {
+    var selection: CGRect?
+    var lastHoverLocation: CGPoint?
+    var isSelectionFinalized: Bool = false
+    var isDragging: Bool = false
+
+    /// Apply a pointer move in screen-local top-left coordinates.
+    /// Returns `true` when `selection` changed.
+    @discardableResult
+    mutating func pointerMoved(
+        to point: CGPoint,
+        candidates: [CaptureWindowCandidate],
+        screenSize: CGSize
+    ) -> Bool {
+        guard !isSelectionFinalized, !isDragging else { return false }
+        lastHoverLocation = point
+        let next = CaptureWindowSelection.selectionRect(
+            at: point,
+            candidates: candidates,
+            screenSize: screenSize
+        )
+        guard next != selection else { return false }
+        selection = next
+        return true
+    }
+
+    /// Unlock after the user presses X — resume hover from the last known point.
+    mutating func unlock(
+        candidates: [CaptureWindowCandidate],
+        screenSize: CGSize
+    ) {
+        isSelectionFinalized = false
+        isDragging = false
+        if let lastHoverLocation {
+            selection = CaptureWindowSelection.selectionRect(
+                at: lastHoverLocation,
+                candidates: candidates,
+                screenSize: screenSize
+            )
+        }
+    }
+}

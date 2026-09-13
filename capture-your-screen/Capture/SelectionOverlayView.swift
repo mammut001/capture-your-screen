@@ -151,7 +151,7 @@ struct SelectionOverlayView: View {
     }
 
     private var instructionLabel: some View {
-        Text("Hover to target, click to lock, or drag — Esc cancel, ⌘↩ quick save, ↵ annotate")
+        Text("Move to target, click to lock, or drag — Esc cancel, ⌘↩ quick save, ↵ annotate")
             .font(.system(size: 13, weight: .medium))
             .foregroundColor(.white)
             .padding(.horizontal, 16)
@@ -165,21 +165,38 @@ struct SelectionOverlayView: View {
         Color.clear
             .contentShape(Rectangle())
             .frame(width: size.width, height: size.height)
-            .onContinuousHover { phase in
-                guard !isSelectionFinalized, dragStart == nil else { return }
-                switch phase {
-                case .active(let location):
-                    lastHoverLocation = location
-                    selection = CaptureWindowSelection.selectionRect(
-                        at: location,
-                        candidates: windowCandidates,
-                        screenSize: size
-                    )
-                case .ended:
-                    break
-                }
-            }
+            // NSTrackingArea (.activeAlways) + global mouse-moved: works without a
+            // priming click and without NSApp.activate (menus stay open).
+            .background(
+                OverlayMouseMoveMonitor(
+                    isEnabled: !isSelectionFinalized && dragStart == nil,
+                    screen: screen,
+                    onMove: { location in
+                        applyPointerMove(to: location, canvasSize: size)
+                    }
+                )
+            )
             .gesture(dragGesture)
+    }
+
+    /// Shared path for tracking-area / global monitor moves (no priming click).
+    private func applyPointerMove(to location: CGPoint, canvasSize: CGSize) {
+        var session = OverlayHoverSession(
+            selection: selection,
+            lastHoverLocation: lastHoverLocation,
+            isSelectionFinalized: isSelectionFinalized,
+            isDragging: dragStart != nil
+        )
+        guard session.pointerMoved(
+            to: location,
+            candidates: windowCandidates,
+            screenSize: canvasSize
+        ) else {
+            lastHoverLocation = session.lastHoverLocation
+            return
+        }
+        lastHoverLocation = session.lastHoverLocation
+        selection = session.selection
     }
 
     private var dragGesture: some Gesture {
@@ -246,18 +263,25 @@ struct SelectionOverlayView: View {
 
     private func actionButtons(for rect: CGRect, canvasSize: CGSize) -> some View {
         HStack(spacing: 12) {
-            // X button — cancel selection and let user re-select
+            // X button — cancel selection and let user re-select via hover immediately
             Button(action: {
-                isSelectionFinalized = false
-                if let lastHoverLocation {
-                    selection = CaptureWindowSelection.selectionRect(
-                        at: lastHoverLocation,
-                        candidates: windowCandidates,
-                        screenSize: canvasSize
-                    )
-                } else {
-                    selection = nil
-                }
+                var session = OverlayHoverSession(
+                    selection: selection,
+                    lastHoverLocation: lastHoverLocation,
+                    isSelectionFinalized: true,
+                    isDragging: false
+                )
+                session.unlock(candidates: windowCandidates, screenSize: canvasSize)
+                isSelectionFinalized = session.isSelectionFinalized
+                lastHoverLocation = session.lastHoverLocation
+                selection = session.selection
+                // Re-snap under the live cursor so the next move is not required
+                // to "wake" tracking after unlock.
+                let live = CaptureWindowSelection.screenLocalPoint(
+                    fromCocoaGlobal: NSEvent.mouseLocation,
+                    on: screen
+                )
+                applyPointerMove(to: live, canvasSize: canvasSize)
             }) {
                 Image(systemName: "xmark")
                     .font(.system(size: 14, weight: .bold))

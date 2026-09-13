@@ -9,6 +9,8 @@ Capture Your Screen is a Swift macOS project with two complementary surfaces: a 
 This is not just a wrapper around `screencapture`. The project keeps the desktop capture pipeline, annotation UI, and automation boundary separate so the same native capture stack can serve both interactive use and agent workflows.
 
 - **Native ScreenCaptureKit pipeline** for macOS capture
+- **Freeze-frame capture** so menu bar popovers, context menus, and tooltips survive the confirm click
+- **Click-free window targeting** on the selection overlay (move to snap, click to lock)
 - **Menu bar app** with post-capture annotation flow
 - **Structured annotation system** with canvas, compositor, renderer, selection handles, arrows, and numbered callouts
 - **Read-only CLI helper** that writes PNG output and returns safe JSON metadata
@@ -88,7 +90,8 @@ bash scripts/build_helper.sh
 Install the built binary wherever your automation stack expects it, for example:
 
 ```bash
-cp .derivedData/Build/Products/Release/capture-screen-helper /usr/local/bin/
+# After scripts/build_helper.sh:
+cp build/Release/capture-screen-helper /usr/local/bin/
 ```
 
 ## CLI usage
