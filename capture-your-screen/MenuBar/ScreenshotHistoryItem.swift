@@ -10,6 +10,13 @@ struct ScreenshotHistoryItem: Identifiable, Equatable {
 
     var filename: String { url.lastPathComponent }
 
+    var formatLabel: String {
+        switch url.pathExtension.lowercased() {
+        case "jpg", "jpeg": "JPEG"
+        default: "PNG"
+        }
+    }
+
     var formattedFileSize: String? {
         guard let fileSize else { return nil }
         let bytes = Double(fileSize)

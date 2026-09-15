@@ -31,7 +31,8 @@ final class ScreenshotStore: ObservableObject {
     /// Lazy preview images keyed by record id (standardized path).
     @Published private(set) var thumbnailsByID: [String: NSImage] = [:]
 
-    let resolver = StorageResolver()
+    let resolver: StorageResolver
+    private let saveFormatProvider: @MainActor () -> SaveFormat
     private let folderWatcher = FolderWatcher()
     private var scheduledRefreshTask: Task<Void, Never>?
     private let refreshInterval: TimeInterval = 1.5
@@ -50,7 +51,14 @@ final class ScreenshotStore: ObservableObject {
     private var activeThumbnailLoads = 0
     private var pendingThumbnailIDs: [String] = []
 
-    init() {
+    init(
+        resolver: StorageResolver? = nil,
+        saveFormatProvider: @escaping @MainActor () -> SaveFormat = {
+            SaveFormat.preferred()
+        }
+    ) {
+        self.resolver = resolver ?? StorageResolver()
+        self.saveFormatProvider = saveFormatProvider
         folderWatcher.onChange = { [weak self] in
             Task { @MainActor [weak self] in
                 self?.scheduleRefreshHistory()
@@ -72,15 +80,16 @@ final class ScreenshotStore: ObservableObject {
 
         try FileManager.default.createDirectory(at: dateFolderURL, withIntermediateDirectories: true)
 
-        let filename = "Screenshot_\(dateFormatter.string(from: now)).png"
+        let format = saveFormatProvider()
+        let filename = "Screenshot_\(dateFormatter.string(from: now)).\(format.fileExtension)"
         let fileURL = dateFolderURL.appendingPathComponent(filename)
 
-        guard let pngData = pngData(from: image) else {
+        guard let encodedData = ScreenshotEncoding.data(from: image, format: format) else {
             throw StorageError.imageEncodingFailed
         }
 
         try await Task.detached(priority: .userInitiated) {
-            try pngData.write(to: fileURL, options: .atomic)
+            try encodedData.write(to: fileURL, options: .atomic)
         }.value
 
         let thumbnail = await Task.detached(priority: .utility) {
@@ -258,16 +267,15 @@ final class ScreenshotStore: ObservableObject {
             )
 
             while let url = enumerator?.nextObject() as? URL {
-                if url.pathExtension.lowercased() == "png" {
+                if SaveFormat.supportedFileExtensions.contains(url.pathExtension.lowercased()) {
                     foundURLs.append(url)
                 }
             }
 
             return foundURLs.compactMap { url in
-                let filename = url.lastPathComponent
-                let datePart = filename
-                    .replacingOccurrences(of: "Screenshot_", with: "")
-                    .replacingOccurrences(of: ".png", with: "")
+                let filename = url.deletingPathExtension().lastPathComponent
+                guard filename.hasPrefix("Screenshot_") else { return nil }
+                let datePart = String(filename.dropFirst("Screenshot_".count))
                 guard let date = formatter.date(from: datePart) else { return nil }
                 return ScreenshotRecord(url: url, date: date)
             }
@@ -418,10 +426,6 @@ final class ScreenshotStore: ObservableObject {
     private var testingCancellables = Set<AnyCancellable>()
 
     // MARK: - Helpers
-
-    private func pngData(from image: NSImage) -> Data? {
-        ScreenshotEncoding.pngData(from: image)
-    }
 
     /// ImageIO thumbnail — avoids decoding full-resolution PNG on the main actor.
     nonisolated static func loadThumbnailFromDisk(at url: URL, maxPixelSize: CGFloat = 420) -> NSImage? {

@@ -37,7 +37,7 @@ enum StorageError: LocalizedError {
         case .fileNotFound:
             return "Screenshot file not found."
         case .imageEncodingFailed:
-            return "Failed to encode the screenshot as PNG."
+            return "Failed to encode the screenshot image."
         case .fileNotInScreenshotDirectory:
             return "File is not inside the screenshots folder."
         }

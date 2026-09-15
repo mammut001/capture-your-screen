@@ -355,19 +355,10 @@ final class MenuBarViewModel: ObservableObject {
     }
 
     func historyRows(matching query: String) -> [HistoryListRow] {
-        guard !query.isEmpty else { return historyRows }
-        let lower = query.lowercased()
-        return historyRows.compactMap { row in
-            switch row {
-            case .dayHeader:
-                // Only keep day headers that have at least one matching item below them
-                return row
-            case .item(let item):
-                let nameMatch = item.filename.lowercased().contains(lower)
-                let timeMatch = item.displayTime.lowercased().contains(lower)
-                return (nameMatch || timeMatch) ? row : nil
-            }
+        guard !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return historyRows
         }
+        return HistorySectionBuilder.filteredRows(from: historySections, matching: query)
     }
 
     func updateHotkeyDisplay(_ display: String) {
@@ -455,7 +446,10 @@ final class MenuBarViewModel: ObservableObject {
             return
         }
 
-        writeImageDataToPasteboard(data)
+        guard writeImageDataToPasteboard(data, sourceURL: url) else {
+            showError("Could not copy the screenshot to the clipboard.")
+            return
+        }
         showCopySuccess()
     }
 
@@ -472,12 +466,16 @@ final class MenuBarViewModel: ObservableObject {
         }
     }
 
-    private func writeImageDataToPasteboard(_ data: Data) {
+    @discardableResult
+    private func writeImageDataToPasteboard(_ data: Data, sourceURL: URL) -> Bool {
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
         let item = NSPasteboardItem()
-        item.setData(data, forType: .png)
-        pasteboard.writeObjects([item])
+        let pasteboardType: NSPasteboard.PasteboardType = sourceURL.pathExtension.lowercased() == "png"
+            ? .png
+            : NSPasteboard.PasteboardType("public.jpeg")
+        guard item.setData(data, forType: pasteboardType) else { return false }
+        return pasteboard.writeObjects([item])
     }
 
     private func showCopySuccess() {
@@ -567,12 +565,6 @@ final class MenuBarViewModel: ObservableObject {
             showError(error.localizedDescription)
         }
     }
-}
-
-enum SaveFormat: String, CaseIterable, Identifiable {
-    case png
-    case jpeg
-    var id: String { rawValue }
 }
 
 extension Calendar {

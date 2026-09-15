@@ -118,6 +118,58 @@ final class HistoryDayGroupingTests: XCTestCase {
         XCTAssertEqual(viewModel.historyRows.count, 12) // 1 header + 11 items
     }
 
+    func testFilteredRowsRemoveEmptyDayHeadersAndUpdateMatchCount() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+
+        let olderDay = calendar.date(from: DateComponents(year: 2026, month: 8, day: 1, hour: 9))!
+        let newerDay = calendar.date(from: DateComponents(year: 2026, month: 8, day: 2, hour: 9))!
+        let records = [
+            ScreenshotRecord(
+                url: URL(fileURLWithPath: "/tmp/shots/Screenshot_alpha.png"),
+                date: olderDay
+            ),
+            ScreenshotRecord(
+                url: URL(fileURLWithPath: "/tmp/shots/Screenshot_beta.png"),
+                date: newerDay
+            ),
+            ScreenshotRecord(
+                url: URL(fileURLWithPath: "/tmp/shots/Screenshot_beta-second.jpg"),
+                date: calendar.date(byAdding: .minute, value: 1, to: newerDay)!
+            )
+        ]
+
+        let sections = HistorySectionBuilder.sections(from: records, calendar: calendar)
+        let rows = HistorySectionBuilder.filteredRows(from: sections, matching: "  BETA  ")
+
+        XCTAssertEqual(rows.count, 3, "one matching header plus two matching screenshots")
+        guard case .dayHeader(_, _, let subtitle, let count) = rows[0] else {
+            XCTFail("first filtered row should be its day header")
+            return
+        }
+        XCTAssertEqual(count, 2)
+        XCTAssertTrue(subtitle.contains("2 shots"))
+        XCTAssertTrue(rows.dropFirst().allSatisfy {
+            if case .item(let item) = $0 { return item.filename.lowercased().contains("beta") }
+            return false
+        })
+    }
+
+    func testWhitespaceOnlySearchReturnsAllRows() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let day = calendar.date(from: DateComponents(year: 2026, month: 8, day: 3, hour: 9))!
+        let sections = HistorySectionBuilder.sections(
+            from: [record(day: day, index: 0, calendar: calendar)],
+            calendar: calendar
+        )
+
+        XCTAssertEqual(
+            HistorySectionBuilder.filteredRows(from: sections, matching: " \n\t "),
+            HistorySectionBuilder.flatRows(from: sections)
+        )
+    }
+
     // MARK: - Helpers
 
     private func record(day: Date, index: Int, calendar: Calendar) -> ScreenshotRecord {

@@ -72,6 +72,26 @@ enum HistorySectionBuilder {
         return rows
     }
 
+    /// Filters complete day sections so a search never leaves orphan headers.
+    /// Rebuilding rows from the filtered sections also keeps per-day counts accurate.
+    static func filteredRows(
+        from sections: [ScreenshotDaySection],
+        matching query: String
+    ) -> [HistoryListRow] {
+        let normalizedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !normalizedQuery.isEmpty else { return flatRows(from: sections) }
+
+        let filteredSections = sections.compactMap { section -> ScreenshotDaySection? in
+            let matchingItems = section.items.filter { item in
+                item.filename.lowercased().contains(normalizedQuery)
+                    || item.displayTime.lowercased().contains(normalizedQuery)
+            }
+            guard !matchingItems.isEmpty else { return nil }
+            return ScreenshotDaySection(date: section.date, items: matchingItems)
+        }
+        return flatRows(from: filteredSections)
+    }
+
     /// Apply one thumbnail into a map without touching list structure.
     static func applyingThumbnail(
         _ image: NSImage,

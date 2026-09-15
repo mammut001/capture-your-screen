@@ -222,27 +222,44 @@ struct MenuBarView: View {
                 .padding(20)
                 .background(panelCardBackground)
             } else {
-                ScrollView {
-                    // Flat header + item rows: LazyVStack can recycle each card independently.
-                    LazyVStack(alignment: .leading, spacing: 10) {
-                        ForEach(viewModel.historyRows(matching: searchText)) { row in
-                            switch row {
-                            case .dayHeader(let date, let title, let subtitle, let count):
-                                dayHeaderRow(
-                                    date: date,
-                                    title: title,
-                                    subtitle: subtitle,
-                                    count: count
-                                )
-                            case .item(let item):
-                                historyCard(item: item)
+                let matchingRows = viewModel.historyRows(matching: searchText)
+                if matchingRows.isEmpty {
+                    VStack(spacing: 8) {
+                        Image(systemName: "magnifyingglass")
+                            .font(.title2)
+                            .foregroundColor(.secondary)
+                        Text("No matching screenshots")
+                            .font(.headline)
+                        Text("Try a filename, format, or capture time.")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, minHeight: 220, alignment: .center)
+                    .padding(20)
+                    .background(panelCardBackground)
+                } else {
+                    ScrollView {
+                        // Flat header + item rows: LazyVStack can recycle each card independently.
+                        LazyVStack(alignment: .leading, spacing: 10) {
+                            ForEach(matchingRows) { row in
+                                switch row {
+                                case .dayHeader(let date, let title, let subtitle, let count):
+                                    dayHeaderRow(
+                                        date: date,
+                                        title: title,
+                                        subtitle: subtitle,
+                                        count: count
+                                    )
+                                case .item(let item):
+                                    historyCard(item: item)
+                                }
                             }
                         }
+                        .padding(.horizontal, 4)
+                        .padding(.vertical, 2)
                     }
-                    .padding(.horizontal, 4)
-                    .padding(.vertical, 2)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
@@ -445,6 +462,10 @@ struct MenuBarView: View {
                         .padding(.vertical, 2)
                         .background(Color.secondary.opacity(0.10), in: Capsule())
                 }
+
+                Text(item.formatLabel)
+                    .font(.caption2.monospaced().weight(.semibold))
+                    .foregroundColor(.secondary)
 
                 Spacer()
 

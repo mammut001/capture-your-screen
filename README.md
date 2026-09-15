@@ -12,6 +12,7 @@ This is not just a wrapper around `screencapture`. The project keeps the desktop
 - **Freeze-frame capture** so menu bar popovers, context menus, and tooltips survive the confirm click
 - **Click-free window targeting** on the selection overlay (move to snap, click to lock)
 - **Menu bar app** with post-capture annotation flow
+- **Configurable PNG/JPEG saving** with format-aware history and clipboard copying
 - **Structured annotation system** with canvas, compositor, renderer, selection handles, arrows, and numbered callouts
 - **Read-only CLI helper** that writes PNG output and returns safe JSON metadata
 - **Permission-aware behavior** for macOS Screen Recording access
