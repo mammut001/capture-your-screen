@@ -170,6 +170,124 @@ final class HistoryDayGroupingTests: XCTestCase {
         )
     }
 
+    func testDateNavigationAcrossRecordedDays() {
+        let store = ScreenshotStore()
+        let hotkey = HotkeyManager()
+        let coordinator = CaptureCoordinator(screenshotStore: store, hotkeyManager: hotkey)
+        let viewModel = MenuBarViewModel(
+            captureCoordinator: coordinator,
+            screenshotStore: store,
+            hotkeyManager: hotkey
+        )
+
+        let calendar = Calendar.current
+
+        let day1 = calendar.date(from: DateComponents(year: 2026, month: 4, day: 10, hour: 10))!
+        let day2 = calendar.date(from: DateComponents(year: 2026, month: 4, day: 15, hour: 11))!
+        let day3 = calendar.date(from: DateComponents(year: 2026, month: 4, day: 20, hour: 12))!
+
+        let records = [
+            ScreenshotRecord(url: URL(fileURLWithPath: "/tmp/s1.png"), date: day1),
+            ScreenshotRecord(url: URL(fileURLWithPath: "/tmp/s2.png"), date: day2),
+            ScreenshotRecord(url: URL(fileURLWithPath: "/tmp/s3.png"), date: day3)
+        ]
+        store.replaceScreenshotsForTesting(records)
+        spinMain(for: 0.05)
+
+        XCTAssertEqual(viewModel.recordedDays.count, 3)
+
+        // Filter to day2
+        viewModel.applyDate(day2)
+        XCTAssertTrue(viewModel.browsingByDate)
+        XCTAssertEqual(viewModel.previousRecordedDate, calendar.startOfDay(for: day1))
+        XCTAssertEqual(viewModel.nextRecordedDate, calendar.startOfDay(for: day3))
+
+        // Navigate previous (to day1)
+        viewModel.selectPreviousRecordedDate()
+        XCTAssertEqual(viewModel.appliedDateFilter, calendar.startOfDay(for: day1))
+        XCTAssertNil(viewModel.previousRecordedDate)
+        XCTAssertEqual(viewModel.nextRecordedDate, calendar.startOfDay(for: day2))
+
+        // Navigate next (back to day2)
+        viewModel.selectNextRecordedDate()
+        XCTAssertEqual(viewModel.appliedDateFilter, calendar.startOfDay(for: day2))
+
+        // Navigate next (to day3)
+        viewModel.selectNextRecordedDate()
+        XCTAssertEqual(viewModel.appliedDateFilter, calendar.startOfDay(for: day3))
+        XCTAssertNil(viewModel.nextRecordedDate)
+        XCTAssertEqual(viewModel.previousRecordedDate, calendar.startOfDay(for: day2))
+
+        // Clear filter
+        viewModel.clearDateFilter()
+        XCTAssertFalse(viewModel.browsingByDate)
+        XCTAssertNil(viewModel.appliedDateFilter)
+    }
+
+    func testDateFilteredSearchMatchesOnlyWithinFilteredDay() {
+        let store = ScreenshotStore()
+        let hotkey = HotkeyManager()
+        let coordinator = CaptureCoordinator(screenshotStore: store, hotkeyManager: hotkey)
+        let viewModel = MenuBarViewModel(
+            captureCoordinator: coordinator,
+            screenshotStore: store,
+            hotkeyManager: hotkey
+        )
+
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+
+        let dayA = calendar.date(from: DateComponents(year: 2026, month: 5, day: 1, hour: 10))!
+        let dayB = calendar.date(from: DateComponents(year: 2026, month: 5, day: 2, hour: 10))!
+
+        let records = [
+            ScreenshotRecord(url: URL(fileURLWithPath: "/tmp/shots/report_alpha.png"), date: dayA),
+            ScreenshotRecord(url: URL(fileURLWithPath: "/tmp/shots/report_beta.png"), date: dayB),
+            ScreenshotRecord(url: URL(fileURLWithPath: "/tmp/shots/chart_beta.png"), date: dayB)
+        ]
+        store.replaceScreenshotsForTesting(records)
+        spinMain(for: 0.05)
+
+        // Filter to dayB
+        viewModel.applyDate(dayB)
+        XCTAssertEqual(viewModel.filteredHistoryItems.count, 2)
+
+        // Search within dayB for "report"
+        let searchReport = viewModel.filteredHistoryItems(matching: "report")
+        XCTAssertEqual(searchReport.count, 1)
+        XCTAssertEqual(searchReport.first?.filename, "report_beta.png")
+
+        // Search within dayB for "alpha" (which exists on dayA, not dayB)
+        let searchAlpha = viewModel.filteredHistoryItems(matching: "alpha")
+        XCTAssertTrue(searchAlpha.isEmpty)
+    }
+
+    func testTodayAndYesterdayQuickActions() {
+        let store = ScreenshotStore()
+        let hotkey = HotkeyManager()
+        let coordinator = CaptureCoordinator(screenshotStore: store, hotkeyManager: hotkey)
+        let viewModel = MenuBarViewModel(
+            captureCoordinator: coordinator,
+            screenshotStore: store,
+            hotkeyManager: hotkey
+        )
+
+        viewModel.applyToday()
+        XCTAssertTrue(viewModel.browsingByDate)
+        XCTAssertTrue(viewModel.isTodayFiltered)
+        XCTAssertFalse(viewModel.isYesterdayFiltered)
+
+        viewModel.applyYesterday()
+        XCTAssertTrue(viewModel.browsingByDate)
+        XCTAssertFalse(viewModel.isTodayFiltered)
+        XCTAssertTrue(viewModel.isYesterdayFiltered)
+
+        viewModel.clearDateFilter()
+        XCTAssertFalse(viewModel.browsingByDate)
+        XCTAssertFalse(viewModel.isTodayFiltered)
+        XCTAssertFalse(viewModel.isYesterdayFiltered)
+    }
+
     // MARK: - Helpers
 
     private func record(day: Date, index: Int, calendar: Calendar) -> ScreenshotRecord {

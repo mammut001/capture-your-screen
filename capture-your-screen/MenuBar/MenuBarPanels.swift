@@ -7,12 +7,12 @@ struct MenuBarView: View {
     @EnvironmentObject var hotkeyManager: HotkeyManager
     @Environment(\.dismiss) private var dismiss: DismissAction
     @State private var showingDatePicker: Bool = false
-    @State private var pendingDate: Date = Date()
     @State private var searchText: String = ""
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: 12) {
             headerSection
+            filterAndSearchSection
             historyContent
             footerSection
         }
@@ -34,6 +34,11 @@ struct MenuBarView: View {
         .onAppear {
             hotkeyManager.ensureRegistered()
             viewModel.refreshPermissionStatus()
+        }
+        .overlay {
+            if showingDatePicker {
+                calendarOverlay
+            }
         }
         .overlay(alignment: .bottom) {
             VStack(spacing: 6) {
@@ -58,6 +63,33 @@ struct MenuBarView: View {
             .padding(.bottom, 12)
             .animation(.easeInOut(duration: 0.2), value: viewModel.errorMessage)
         }
+    }
+
+    private var calendarOverlay: some View {
+        ZStack(alignment: .top) {
+            Color.black.opacity(0.16)
+                .ignoresSafeArea()
+                .transition(.opacity)
+                .onTapGesture {
+                    withAnimation(.spring(response: 0.24, dampingFraction: 0.85)) {
+                        showingDatePicker = false
+                    }
+                }
+
+            VStack {
+                calendarFloatingCard
+                    .padding(.top, 48)
+                    .transition(
+                        .asymmetric(
+                            insertion: .scale(scale: 0.94, anchor: .topTrailing).combined(with: .opacity),
+                            removal: .scale(scale: 0.96, anchor: .topTrailing).combined(with: .opacity)
+                        )
+                    )
+                Spacer()
+            }
+            .padding(.horizontal, 16)
+        }
+        .zIndex(100)
     }
 
     private var batchDeleteBar: some View {
@@ -104,8 +136,11 @@ struct MenuBarView: View {
 
                 Button(action: toggleDatePicker) {
                     HStack(spacing: 6) {
-                        Image(systemName: dateButtonSymbolName)
-                        Text(dateButtonTitle)
+                        Image(systemName: "calendar")
+                        Text(dateHeaderButtonTitle)
+                        Image(systemName: "chevron.down")
+                            .font(.system(size: 9, weight: .bold))
+                            .rotationEffect(.degrees(showingDatePicker ? 180 : 0))
                     }
                     .font(.caption.weight(.semibold))
                     .foregroundColor(viewModel.browsingByDate || showingDatePicker ? .accentColor : .primary)
@@ -117,7 +152,7 @@ struct MenuBarView: View {
                     )
                 }
                 .buttonStyle(.plain)
-                .help(viewModel.browsingByDate ? "Back to all screenshots" : "Browse by date")
+                .help("Browse by date")
             }
 
             Button(action: {
@@ -166,121 +201,212 @@ struct MenuBarView: View {
                 permissionWarningBanner
                     .transition(.move(edge: .top).combined(with: .opacity))
             }
-
-
-            if showingDatePicker {
-                datePickerCard
-                    .transition(
-                        .asymmetric(
-                            insertion: .move(edge: .top).combined(with: .opacity),
-                            removal: .scale(scale: 0.96).combined(with: .opacity)
-                        )
-                    )
-            }
         }
         .zIndex(1)
-        .clipped()
     }
 
-    @ViewBuilder
-    private var historyContent: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            if !viewModel.browsingByDate && !showingDatePicker {
-                HStack(spacing: 8) {
-                    Image(systemName: "magnifyingglass")
-                        .foregroundColor(.secondary)
-                    TextField("Search screenshots…", text: $searchText)
-                        .textFieldStyle(.plain)
-                    if !searchText.isEmpty {
-                        Button(action: { searchText = "" }) {
-                            Image(systemName: "xmark.circle.fill")
-                                .foregroundColor(.secondary)
-                        }
-                        .buttonStyle(.plain)
+    private var filterAndSearchSection: some View {
+        VStack(spacing: 8) {
+            HStack(spacing: 8) {
+                Image(systemName: "magnifyingglass")
+                    .foregroundColor(.secondary)
+                TextField(viewModel.browsingByDate ? "Search this date's screenshots…" : "Search screenshots…", text: $searchText)
+                    .textFieldStyle(.plain)
+                if !searchText.isEmpty {
+                    Button(action: { searchText = "" }) {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundColor(.secondary)
                     }
+                    .buttonStyle(.plain)
                 }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 8)
-                .background(
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .fill(Color(NSColor.controlBackgroundColor).opacity(0.85))
-                )
             }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 7)
+            .background(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(Color(NSColor.controlBackgroundColor).opacity(0.85))
+            )
+
+            quickFilterChipsRow
 
             if viewModel.browsingByDate {
                 selectedDateBanner
-                historyScroll(items: viewModel.filteredHistoryItems)
-            } else if !showingDatePicker && historyIsEmpty {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("No screenshots yet")
-                        .font(.headline)
-                    Text("Start with a new capture and your recent shots will appear here.")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                }
-                .frame(maxWidth: .infinity, minHeight: 220, alignment: .center)
-                .padding(20)
-                .background(panelCardBackground)
-            } else {
-                let matchingRows = viewModel.historyRows(matching: searchText)
-                if matchingRows.isEmpty {
-                    VStack(spacing: 8) {
-                        Image(systemName: "magnifyingglass")
-                            .font(.title2)
-                            .foregroundColor(.secondary)
-                        Text("No matching screenshots")
-                            .font(.headline)
-                        Text("Try a filename, format, or capture time.")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                    }
-                    .frame(maxWidth: .infinity, minHeight: 220, alignment: .center)
-                    .padding(20)
-                    .background(panelCardBackground)
-                } else {
-                    ScrollView {
-                        // Flat header + item rows: LazyVStack can recycle each card independently.
-                        LazyVStack(alignment: .leading, spacing: 10) {
-                            ForEach(matchingRows) { row in
-                                switch row {
-                                case .dayHeader(let date, let title, let subtitle, let count):
-                                    dayHeaderRow(
-                                        date: date,
-                                        title: title,
-                                        subtitle: subtitle,
-                                        count: count
-                                    )
-                                case .item(let item):
-                                    historyCard(item: item)
-                                }
-                            }
-                        }
-                        .padding(.horizontal, 4)
-                        .padding(.vertical, 2)
-                    }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                }
+                    .transition(.move(edge: .top).combined(with: .opacity))
             }
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+    }
+
+    private var quickFilterChipsRow: some View {
+        HStack(spacing: 6) {
+            filterChip(
+                title: "All",
+                count: nil,
+                isSelected: !viewModel.browsingByDate,
+                systemImage: "square.grid.2x2"
+            ) {
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    viewModel.clearDateFilter()
+                    showingDatePicker = false
+                }
+            }
+
+            let todayCount = viewModel.todayScreenshotCount
+            filterChip(
+                title: "Today",
+                count: todayCount > 0 ? todayCount : nil,
+                isSelected: viewModel.isTodayFiltered,
+                systemImage: "sun.max"
+            ) {
+                withAnimation(.spring(response: 0.25, dampingFraction: 0.85)) {
+                    viewModel.applyToday()
+                    showingDatePicker = false
+                }
+            }
+
+            let yesterdayCount = viewModel.yesterdayScreenshotCount
+            if yesterdayCount > 0 || viewModel.isYesterdayFiltered {
+                filterChip(
+                    title: "Yesterday",
+                    count: yesterdayCount > 0 ? yesterdayCount : nil,
+                    isSelected: viewModel.isYesterdayFiltered,
+                    systemImage: "clock.arrow.circlepath"
+                ) {
+                    withAnimation(.spring(response: 0.25, dampingFraction: 0.85)) {
+                        viewModel.applyYesterday()
+                        showingDatePicker = false
+                    }
+                }
+            }
+
+            Spacer()
+
+            Button(action: toggleDatePicker) {
+                HStack(spacing: 4) {
+                    Image(systemName: "calendar")
+                        .font(.system(size: 11, weight: .semibold))
+                    if viewModel.browsingByDate && !viewModel.isTodayFiltered && !viewModel.isYesterdayFiltered,
+                       let filterDate = viewModel.appliedDateFilter {
+                        Text(formattedDate(filterDate))
+                            .font(.caption.weight(.semibold))
+                    } else {
+                        Text("Pick Date")
+                            .font(.caption.weight(.medium))
+                    }
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 8, weight: .bold))
+                        .rotationEffect(.degrees(showingDatePicker ? 180 : 0))
+                }
+                .foregroundColor(
+                    showingDatePicker || (viewModel.browsingByDate && !viewModel.isTodayFiltered && !viewModel.isYesterdayFiltered)
+                        ? .accentColor
+                        : .secondary
+                )
+                .padding(.horizontal, 9)
+                .padding(.vertical, 5)
+                .background(
+                    Capsule()
+                        .fill(
+                            showingDatePicker || (viewModel.browsingByDate && !viewModel.isTodayFiltered && !viewModel.isYesterdayFiltered)
+                                ? Color.accentColor.opacity(0.12)
+                                : Color(NSColor.controlBackgroundColor).opacity(0.85)
+                        )
+                )
+            }
+            .buttonStyle(.plain)
+            .help("Open calendar to choose a specific date")
+        }
+    }
+
+    private func filterChip(
+        title: String,
+        count: Int?,
+        isSelected: Bool,
+        systemImage: String? = nil,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            HStack(spacing: 5) {
+                if let systemImage {
+                    Image(systemName: systemImage)
+                        .font(.system(size: 10, weight: .semibold))
+                }
+                Text(title)
+                    .font(.caption.weight(isSelected ? .semibold : .medium))
+                if let count {
+                    Text("\(count)")
+                        .font(.system(size: 10, weight: .bold, design: .rounded))
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 1)
+                        .background(
+                            Capsule()
+                                .fill(isSelected ? Color.accentColor : Color.secondary.opacity(0.2))
+                        )
+                        .foregroundColor(isSelected ? .white : .secondary)
+                }
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+            .foregroundColor(isSelected ? .accentColor : .primary)
+            .background(
+                Capsule()
+                    .fill(isSelected ? Color.accentColor.opacity(0.12) : Color(NSColor.controlBackgroundColor).opacity(0.85))
+            )
+        }
+        .buttonStyle(.plain)
     }
 
     @ViewBuilder
     private var selectedDateBanner: some View {
         if let filterDate = viewModel.appliedDateFilter {
             HStack(spacing: 8) {
+                Button(action: {
+                    withAnimation(.spring(response: 0.25, dampingFraction: 0.85)) {
+                        viewModel.selectPreviousRecordedDate()
+                    }
+                }) {
+                    Image(systemName: "chevron.left")
+                        .font(.system(size: 11, weight: .bold))
+                        .frame(width: 22, height: 22)
+                }
+                .buttonStyle(.plain)
+                .disabled(viewModel.previousRecordedDate == nil)
+                .opacity(viewModel.previousRecordedDate == nil ? 0.3 : 1)
+                .help(viewModel.previousRecordedDate.map { "Previous date with captures: \(formattedDate($0))" } ?? "No earlier captures")
+
+                HStack(spacing: 6) {
+                    Text(dateBannerTitle(for: filterDate))
+                        .font(.caption.bold())
+                        .foregroundColor(.primary)
+
+                    let count = viewModel.filteredHistoryItems.count
+                    Text("· \(count) shot\(count == 1 ? "" : "s")")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                }
+
+                Button(action: {
+                    withAnimation(.spring(response: 0.25, dampingFraction: 0.85)) {
+                        viewModel.selectNextRecordedDate()
+                    }
+                }) {
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 11, weight: .bold))
+                        .frame(width: 22, height: 22)
+                }
+                .buttonStyle(.plain)
+                .disabled(viewModel.nextRecordedDate == nil)
+                .opacity(viewModel.nextRecordedDate == nil ? 0.3 : 1)
+                .help(viewModel.nextRecordedDate.map { "Next date with captures: \(formattedDate($0))" } ?? "No later captures")
+
+                Spacer()
+
                 Button(action: { viewModel.copyLatestScreenshot(on: filterDate) }) {
-                    Image(systemName: "doc.on.doc.fill")
+                    Image(systemName: "doc.on.doc")
+                        .font(.system(size: 11))
                         .foregroundColor(.accentColor)
                 }
                 .buttonStyle(.plain)
                 .help("Copy latest screenshot for this date")
-
-                Text(formattedDate(filterDate))
-                    .font(.caption.bold())
-                    .foregroundColor(.accentColor)
-
-                Spacer()
 
                 Button(action: {
                     withAnimation(.easeInOut(duration: 0.2)) {
@@ -289,14 +415,80 @@ struct MenuBarView: View {
                     }
                 }) {
                     Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 13))
                         .foregroundColor(.secondary)
                 }
                 .buttonStyle(.plain)
-                .help("Clear date filter")
+                .help("Clear date filter (show all)")
             }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 9)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 7)
+            .background(
+                RoundedRectangle(cornerRadius: 11, style: .continuous)
+                    .fill(Color(NSColor.controlBackgroundColor).opacity(0.95))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 11, style: .continuous)
+                            .stroke(Color.accentColor.opacity(0.2), lineWidth: 1)
+                    )
+            )
+        }
+    }
+
+    @ViewBuilder
+    private var historyContent: some View {
+        if viewModel.browsingByDate {
+            let items = viewModel.filteredHistoryItems(matching: searchText)
+            historyScroll(items: items)
+        } else if historyIsEmpty {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("No screenshots yet")
+                    .font(.headline)
+                Text("Start with a new capture and your recent shots will appear here.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+            .frame(maxWidth: .infinity, minHeight: 220, alignment: .center)
+            .padding(20)
             .background(panelCardBackground)
+        } else {
+            let matchingRows = viewModel.historyRows(matching: searchText)
+            if matchingRows.isEmpty {
+                VStack(spacing: 8) {
+                    Image(systemName: "magnifyingglass")
+                        .font(.title2)
+                        .foregroundColor(.secondary)
+                    Text("No matching screenshots")
+                        .font(.headline)
+                    Text("Try a filename, format, or capture time.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+                .frame(maxWidth: .infinity, minHeight: 220, alignment: .center)
+                .padding(20)
+                .background(panelCardBackground)
+            } else {
+                ScrollView {
+                    // Flat header + item rows: LazyVStack can recycle each card independently.
+                    LazyVStack(alignment: .leading, spacing: 10) {
+                        ForEach(matchingRows) { row in
+                            switch row {
+                            case .dayHeader(let date, let title, let subtitle, let count):
+                                dayHeaderRow(
+                                    date: date,
+                                    title: title,
+                                    subtitle: subtitle,
+                                    count: count
+                                )
+                            case .item(let item):
+                                historyCard(item: item)
+                            }
+                        }
+                    }
+                    .padding(.horizontal, 4)
+                    .padding(.vertical, 2)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
         }
     }
 
@@ -334,12 +526,32 @@ struct MenuBarView: View {
     private func historyScroll(items: [ScreenshotHistoryItem]) -> some View {
         Group {
             if items.isEmpty {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("No screenshots on this day")
+                VStack(spacing: 8) {
+                    Image(systemName: searchText.isEmpty ? "calendar.badge.exclamationmark" : "magnifyingglass")
+                        .font(.title2)
+                        .foregroundColor(.secondary)
+                    Text(searchText.isEmpty ? "No screenshots on this day" : "No matching screenshots")
                         .font(.headline)
-                    Text("Try another date or clear the filter to browse all captures.")
+                    Text(searchText.isEmpty ? "Try another date or clear the filter to browse all captures." : "Try adjusting your search query.")
                         .font(.caption)
                         .foregroundColor(.secondary)
+                    if !searchText.isEmpty {
+                        Button("Clear Search") {
+                            searchText = ""
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                        .padding(.top, 4)
+                    } else {
+                        Button("Show All Captures") {
+                            withAnimation(.easeInOut(duration: 0.2)) {
+                                viewModel.clearDateFilter()
+                            }
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                        .padding(.top, 4)
+                    }
                 }
                 .frame(maxWidth: .infinity, minHeight: 220, alignment: .center)
                 .padding(20)
@@ -365,53 +577,52 @@ struct MenuBarView: View {
         subtitle: String,
         count: Int
     ) -> some View {
-                HStack(spacing: 12) {
-                    Button(action: { viewModel.copyLatestScreenshot(on: date) }) {
-                        Image(systemName: "doc.on.doc.fill")
-                            .foregroundColor(.accentColor)
-                    }
-                    .buttonStyle(.plain)
-                    .help("Copy latest screenshot for this date")
+        HStack(spacing: 12) {
+            Button(action: { viewModel.copyLatestScreenshot(on: date) }) {
+                Image(systemName: "doc.on.doc.fill")
+                    .foregroundColor(.accentColor)
+            }
+            .buttonStyle(.plain)
+            .help("Copy latest screenshot for this date")
 
-                    Button(action: {
-                        withAnimation(.easeInOut(duration: 0.2)) {
-                            viewModel.selectDate(date)
-                            viewModel.applySelectedDateFilter()
-                        }
-                    }) {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(title)
-                                .font(.subheadline.bold())
-                                .foregroundColor(.primary)
-                            Text(subtitle)
-                                .font(.caption2)
-                                .foregroundColor(.secondary)
-                        }
-                    }
-                    .buttonStyle(.plain)
-                    .help("Focus this day")
-
-                    Spacer()
-
-                    Text("\(count)")
-                        .font(.caption.bold().monospacedDigit())
-                        .foregroundColor(.secondary)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 4)
-                        .background(Color.secondary.opacity(0.12), in: Capsule())
+            Button(action: {
+                withAnimation(.spring(response: 0.25, dampingFraction: 0.85)) {
+                    viewModel.applyDate(date)
                 }
-                .padding(.horizontal, 14)
-                .padding(.vertical, 10)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(
+            }) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title)
+                        .font(.subheadline.bold())
+                        .foregroundColor(.primary)
+                    Text(subtitle)
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                }
+            }
+            .buttonStyle(.plain)
+            .help("Filter to this day")
+
+            Spacer()
+
+            Text("\(count)")
+                .font(.caption.bold().monospacedDigit())
+                .foregroundColor(.secondary)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(Color.secondary.opacity(0.12), in: Capsule())
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(Color(NSColor.controlBackgroundColor).opacity(0.96))
+                .overlay(
                     RoundedRectangle(cornerRadius: 14, style: .continuous)
-                        .fill(Color(NSColor.controlBackgroundColor).opacity(0.96))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                                .stroke(Color.accentColor.opacity(0.18), lineWidth: 1)
-                        )
+                        .stroke(Color.accentColor.opacity(0.18), lineWidth: 1)
                 )
-                .padding(.top, 6)
+        )
+        .padding(.top, 6)
     }
 
     private func historyCard(item: ScreenshotHistoryItem) -> some View {
@@ -569,93 +780,72 @@ struct MenuBarView: View {
         Self.mediumDateFormatter.string(from: date)
     }
 
+    private func dateBannerTitle(for date: Date) -> String {
+        let cal = Calendar.current
+        if cal.isDateInToday(date) {
+            return "Today (\(formattedDate(date)))"
+        }
+        if cal.isDateInYesterday(date) {
+            return "Yesterday (\(formattedDate(date)))"
+        }
+        return formattedDate(date)
+    }
+
+    private var dateHeaderButtonTitle: String {
+        if let filterDate = viewModel.appliedDateFilter {
+            let cal = Calendar.current
+            if cal.isDateInToday(filterDate) {
+                return "Today"
+            }
+            if cal.isDateInYesterday(filterDate) {
+                return "Yesterday"
+            }
+            return formattedDate(filterDate)
+        }
+        return "Calendar"
+    }
+
     private var headerSubtitle: String {
         if let filterDate = viewModel.appliedDateFilter {
-            return "Browsing screenshots from \(formattedDate(filterDate))"
+            return "Browsing screenshots from \(dateBannerTitle(for: filterDate))"
         }
         return "Recent captures, organized by day"
     }
 
-    private var dateButtonSymbolName: String {
-        if showingDatePicker {
-            return "calendar.badge.minus"
-        }
-        if viewModel.browsingByDate {
-            return "arrow.uturn.backward.circle"
-        }
-        return "calendar"
-    }
-
-    private var dateButtonTitle: String {
-        if showingDatePicker {
-            return "Hide Date"
-        }
-        if viewModel.browsingByDate {
-            return "Back to All"
-        }
-        return "Pick Date"
-    }
-
-    private var datePickerCard: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(alignment: .center) {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("Browse by date")
-                        .font(.headline)
-                    Text("Choose a day to focus on screenshots from that date.")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
+    private var calendarFloatingCard: some View {
+        CompactCalendarView(
+            visibleMonth: $viewModel.visibleMonth,
+            selectedDate: $viewModel.selectedDate,
+            datesWithScreenshots: viewModel.datesWithScreenshots,
+            firstWeekdayPreference: viewModel.firstWeekdayPreference,
+            onSelectDate: { date in
+                withAnimation(.spring(response: 0.25, dampingFraction: 0.85)) {
+                    viewModel.applyDate(date)
+                    showingDatePicker = false
                 }
-
-                Spacer()
-
-                Button("All Dates") {
-                    withAnimation(.easeInOut(duration: 0.2)) {
-                        viewModel.clearDateFilter()
-                        showingDatePicker = false
-                    }
+            },
+            onClearFilter: {
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    viewModel.clearDateFilter()
+                    showingDatePicker = false
                 }
-                .buttonStyle(.borderless)
-                .foregroundColor(.accentColor)
-            }
-
-            VStack(spacing: 14) {
-                CompactCalendarView(
-                    visibleMonth: $viewModel.visibleMonth,
-                    selectedDate: $viewModel.selectedDate,
-                    datesWithScreenshots: viewModel.datesWithScreenshots
-                )
-                    .frame(maxWidth: .infinity)
-
-                HStack(spacing: 10) {
-                    Button("Today") {
-                        viewModel.selectToday()
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.regular)
-
-                    Button("Yesterday") {
-                        viewModel.selectYesterday()
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.regular)
-
-                    Spacer()
-
-                    Button("Apply") {
-                        withAnimation(.spring(response: 0.28, dampingFraction: 0.86)) {
-                            viewModel.applySelectedDateFilter()
-                            showingDatePicker = false
-                        }
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.large)
-                    .keyboardShortcut(.defaultAction)
+            },
+            onClose: {
+                withAnimation(.spring(response: 0.24, dampingFraction: 0.85)) {
+                    showingDatePicker = false
                 }
             }
-        }
-        .padding(14)
-        .background(panelCardBackground)
+        )
+        .frame(width: 320)
+        .background(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .fill(Color(NSColor.windowBackgroundColor))
+                .shadow(color: Color.black.opacity(0.22), radius: 24, y: 12)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .stroke(Color(NSColor.separatorColor).opacity(0.5), lineWidth: 1)
+        )
     }
 
     private var footerSection: some View {
@@ -698,138 +888,67 @@ struct MenuBarView: View {
             .fill(Color(NSColor.controlBackgroundColor).opacity(0.9))
             .overlay(
                 RoundedRectangle(cornerRadius: 22, style: .continuous)
-                    .stroke(Color.white.opacity(0.65), lineWidth: 1)
+                    .stroke(Color(NSColor.separatorColor).opacity(0.4), lineWidth: 1)
             )
             .shadow(color: Color.black.opacity(0.05), radius: 12, y: 6)
     }
 
     private func toggleDatePicker() {
         if showingDatePicker {
-            withAnimation(.easeInOut(duration: 0.2)) {
-                showingDatePicker = false
-            }
-        } else if viewModel.browsingByDate {
-            withAnimation(.easeInOut(duration: 0.2)) {
-                viewModel.clearDateFilter()
+            withAnimation(.spring(response: 0.24, dampingFraction: 0.85)) {
                 showingDatePicker = false
             }
         } else {
             if let filter = viewModel.appliedDateFilter {
                 viewModel.selectedDate = filter
                 viewModel.visibleMonth = Calendar.current.startOfMonth(for: filter)
+            } else {
+                viewModel.visibleMonth = Calendar.current.startOfMonth(for: Date())
             }
-            withAnimation(.spring(response: 0.3, dampingFraction: 0.88)) {
+            withAnimation(.spring(response: 0.26, dampingFraction: 0.84)) {
                 showingDatePicker = true
             }
         }
     }
 }
 
+// MARK: - Compact Calendar View
+
+private struct CalendarDayCell: Identifiable, Equatable {
+    let date: Date
+    let isCurrentMonth: Bool
+    let isToday: Bool
+    let isSelected: Bool
+    let isFuture: Bool
+    let screenshotCount: Int
+
+    var id: TimeInterval { date.timeIntervalSinceReferenceDate }
+}
+
 private struct CompactCalendarView: View {
     @Binding var visibleMonth: Date
     @Binding var selectedDate: Date
     let datesWithScreenshots: [Date: Int]
-    @GestureState private var dragTranslation: CGFloat = 0
+    let firstWeekdayPreference: Int
+    let onSelectDate: (Date) -> Void
+    let onClearFilter: () -> Void
+    let onClose: () -> Void
 
-    private let calendar = Calendar.current
-    private let weekdays = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
+    @State private var hoveredDate: Date? = nil
 
-    init(visibleMonth: Binding<Date>, selectedDate: Binding<Date>, datesWithScreenshots: [Date: Int]) {
-        _visibleMonth = visibleMonth
-        _selectedDate = selectedDate
-        self.datesWithScreenshots = datesWithScreenshots
+    private var calendar: Calendar {
+        var cal = Calendar.current
+        cal.firstWeekday = firstWeekdayPreference
+        return cal
     }
 
-    var body: some View {
-        VStack(spacing: 14) {
-            HStack {
-                monthTitleView
-                Spacer()
-                Button(action: showPreviousMonth) {
-                    Image(systemName: "chevron.left")
-                        .font(.system(size: 14, weight: .semibold))
-                }
-                .buttonStyle(.plain)
-                .foregroundColor(.secondary)
-                .contentShape(Rectangle())
-                .frame(width: 32, height: 32)
-                .zIndex(10)
-
-                Button(action: showNextMonth) {
-                    Image(systemName: "chevron.right")
-                        .font(.system(size: 14, weight: .semibold))
-                }
-                .buttonStyle(.plain)
-                .foregroundColor(canShowNextMonth ? .secondary : .secondary.opacity(0.35))
-                .disabled(!canShowNextMonth)
-                .contentShape(Rectangle())
-                .frame(width: 32, height: 32)
-                .zIndex(10)
-            }
-
-            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 7), spacing: 10) {
-                ForEach(weekdays, id: \.self) { day in
-                    Text(day)
-                        .font(.caption.weight(.semibold))
-                        .foregroundColor(.secondary)
-                        .frame(maxWidth: .infinity)
-                }
-
-                ForEach(monthCells) { cell in
-                    ZStack {
-                        Circle()
-                            .fill(isSelected(cell.date) ? Color.accentColor : Color.clear)
-                            .frame(width: 40, height: 40)
-
-                        Text("\(calendar.component(.day, from: cell.date))")
-                            .font(.system(size: 15, weight: isSelected(cell.date) ? .bold : .medium))
-                            .foregroundColor(textColor(for: cell.date, isCurrentMonth: cell.isCurrentMonth))
-
-                        if let count = screenshotCount(for: cell.date, isCurrentMonth: cell.isCurrentMonth) {
-                            Text(count > 99 ? "99+" : "\(count)")
-                                .font(.system(size: 8, weight: .bold, design: .rounded))
-                                .foregroundColor(.white)
-                                .padding(.horizontal, 3)
-                                .padding(.vertical, 1)
-                                .background(Capsule().fill(Color.green))
-                                .offset(y: 14)
-                        }
-                    }
-                    .frame(width: 42, height: 42)
-                    .contentShape(Rectangle())
-                    .onTapGesture { selectedDate = cell.date }
-                    .opacity(cell.date > Date() ? 0.3 : 1)
-                    .frame(maxWidth: .infinity)
-                }
-            }
-
-            Text("Swipe left or right to change month")
-                .font(.caption)
-                .foregroundColor(.secondary)
+    private var weekdaySymbols: [String] {
+        var symbols = calendar.shortStandaloneWeekdaySymbols
+        let firstIndex = (calendar.firstWeekday - 1 + symbols.count) % symbols.count
+        if firstIndex > 0 {
+            symbols = Array(symbols[firstIndex...] + symbols[..<firstIndex])
         }
-        .padding(14)
-        .background(
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .fill(Color.white.opacity(0.96))
-        )
-        .overlay {
-            TrackpadSwipeCatcher { direction in
-                withAnimation(.spring(response: 0.28, dampingFraction: 0.88)) {
-                    switch direction {
-                    case .previous:
-                        showPreviousMonth()
-                    case .next:
-                        showNextMonth()
-                    }
-                }
-            }
-        }
-        .contentShape(Rectangle())
-        .offset(x: dragTranslation * 0.12)
-        .highPriorityGesture(monthSwipeGesture, including: .gesture)
-        .onChange(of: selectedDate) { _, newValue in
-            visibleMonth = calendar.startOfMonth(for: newValue)
-        }
+        return symbols
     }
 
     private static let monthFormatter: DateFormatter = {
@@ -842,10 +961,8 @@ private struct CompactCalendarView: View {
         Self.monthFormatter.string(from: visibleMonth)
     }
 
-    private var monthTitleView: some View {
-        Text(monthTitle)
-            .font(.system(size: 20, weight: .bold))
-            .fixedSize(horizontal: true, vertical: false)
+    private var isViewingCurrentMonth: Bool {
+        calendar.isDate(visibleMonth, equalTo: Date(), toGranularity: .month)
     }
 
     private var canShowNextMonth: Bool {
@@ -853,163 +970,251 @@ private struct CompactCalendarView: View {
         return visibleMonth < currentMonth
     }
 
-    private var monthCells: [CalendarCell] {
+    private var monthCells: [CalendarDayCell] {
         guard let monthInterval = calendar.dateInterval(of: .month, for: visibleMonth) else {
             return []
         }
 
         let firstDayOfMonth = monthInterval.start
-        let firstWeekday = calendar.component(.weekday, from: firstDayOfMonth)
-        let daysToSubtract = firstWeekday - 1
-        guard let startDate = calendar.date(byAdding: .day, value: -daysToSubtract, to: firstDayOfMonth) else {
+        let weekdayOfFirstDay = calendar.component(.weekday, from: firstDayOfMonth)
+        let daysToSubtract = (weekdayOfFirstDay - calendar.firstWeekday + 7) % 7
+
+        guard let gridStartDate = calendar.date(byAdding: .day, value: -daysToSubtract, to: firstDayOfMonth) else {
             return []
         }
 
-        return (0..<42).compactMap { i in
-            guard let date = calendar.date(byAdding: .day, value: i, to: startDate) else { return nil }
-            let isCurrentMonth = calendar.isDate(date, equalTo: visibleMonth, toGranularity: .month)
-            return CalendarCell(date: date, isCurrentMonth: isCurrentMonth)
+        let daysInMonth = calendar.range(of: .day, in: .month, for: visibleMonth)?.count ?? 30
+        let totalCellsNeeded = daysToSubtract + daysInMonth
+        let numberOfWeeks = (totalCellsNeeded + 6) / 7
+        let totalCells = numberOfWeeks * 7
+
+        let today = calendar.startOfDay(for: Date())
+        let startOfSelected = calendar.startOfDay(for: selectedDate)
+
+        var cells: [CalendarDayCell] = []
+        cells.reserveCapacity(totalCells)
+
+        for i in 0..<totalCells {
+            guard let cellDate = calendar.date(byAdding: .day, value: i, to: gridStartDate) else { continue }
+            let normalizedDate = calendar.startOfDay(for: cellDate)
+            let isCurrentMonth = calendar.isDate(normalizedDate, equalTo: visibleMonth, toGranularity: .month)
+            let isToday = calendar.isDate(normalizedDate, inSameDayAs: today)
+            let isSelected = calendar.isDate(normalizedDate, inSameDayAs: startOfSelected)
+            let isFuture = normalizedDate > today
+            let count = datesWithScreenshots[normalizedDate] ?? 0
+
+            cells.append(
+                CalendarDayCell(
+                    date: normalizedDate,
+                    isCurrentMonth: isCurrentMonth,
+                    isToday: isToday,
+                    isSelected: isSelected,
+                    isFuture: isFuture,
+                    screenshotCount: count
+                )
+            )
         }
+        return cells
+    }
+
+    var body: some View {
+        VStack(spacing: 12) {
+            // Month Header
+            HStack {
+                Text(monthTitle)
+                    .font(.headline.bold())
+                    .foregroundColor(.primary)
+
+                Spacer()
+
+                if !isViewingCurrentMonth {
+                    Button(action: jumpToCurrentMonth) {
+                        Text("Today's Month")
+                            .font(.caption2.weight(.semibold))
+                            .foregroundColor(.accentColor)
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.trailing, 4)
+                }
+
+                Button(action: showPreviousMonth) {
+                    Image(systemName: "chevron.left")
+                        .font(.system(size: 11, weight: .bold))
+                        .frame(width: 26, height: 26)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .foregroundColor(.secondary)
+                .background(Circle().fill(Color.secondary.opacity(0.1)))
+
+                Button(action: showNextMonth) {
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 11, weight: .bold))
+                        .frame(width: 26, height: 26)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .foregroundColor(canShowNextMonth ? .secondary : .secondary.opacity(0.25))
+                .disabled(!canShowNextMonth)
+                .background(Circle().fill(Color.secondary.opacity(canShowNextMonth ? 0.1 : 0.03)))
+            }
+
+            // Weekdays + Day Cells
+            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 4), count: 7), spacing: 6) {
+                ForEach(weekdaySymbols, id: \.self) { day in
+                    Text(day)
+                        .font(.caption2.weight(.semibold))
+                        .foregroundColor(.secondary)
+                        .frame(maxWidth: .infinity)
+                }
+
+                ForEach(monthCells) { cell in
+                    dayCellView(cell: cell)
+                }
+            }
+            .gesture(
+                DragGesture(minimumDistance: 30)
+                    .onEnded { value in
+                        if value.translation.width < -40 {
+                            showNextMonth()
+                        } else if value.translation.width > 40 {
+                            showPreviousMonth()
+                        }
+                    }
+            )
+
+            Divider()
+                .padding(.vertical, 2)
+
+            // Footer shortcuts
+            HStack {
+                Button("Show All") {
+                    onClearFilter()
+                }
+                .buttonStyle(.borderless)
+                .font(.caption.weight(.medium))
+                .foregroundColor(.accentColor)
+
+                Spacer()
+
+                Button("Today") {
+                    let today = calendar.startOfDay(for: Date())
+                    selectedDate = today
+                    onSelectDate(today)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+
+                Button("Close") {
+                    onClose()
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+            }
+        }
+        .padding(14)
+        .onExitCommand {
+            onClose()
+        }
+    }
+
+    private func dayCellView(cell: CalendarDayCell) -> some View {
+        Button(action: {
+            guard !cell.isFuture else { return }
+            selectedDate = cell.date
+            onSelectDate(cell.date)
+        }) {
+            ZStack {
+                if cell.isSelected {
+                    Circle()
+                        .fill(Color.accentColor)
+                        .frame(width: 32, height: 32)
+                } else if cell.isToday {
+                    Circle()
+                        .stroke(Color.accentColor, lineWidth: 1.5)
+                        .frame(width: 32, height: 32)
+                } else if cell.screenshotCount > 0 {
+                    Circle()
+                        .fill(Color.accentColor.opacity(0.10))
+                        .frame(width: 32, height: 32)
+                }
+
+                if hoveredDate == cell.date && !cell.isSelected && !cell.isFuture {
+                    Circle()
+                        .fill(Color.primary.opacity(0.06))
+                        .frame(width: 32, height: 32)
+                }
+
+                Text("\(calendar.component(.day, from: cell.date))")
+                    .font(.system(size: 13, weight: cell.isSelected ? .bold : (cell.screenshotCount > 0 ? .semibold : .regular)))
+                    .foregroundColor(cellTextColor(cell))
+
+                if cell.screenshotCount > 0 {
+                    Circle()
+                        .fill(cell.isSelected ? Color.white : Color.accentColor)
+                        .frame(width: 4, height: 4)
+                        .offset(y: 10)
+                }
+            }
+            .frame(width: 36, height: 36)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(cell.isFuture)
+        .onHover { hovering in
+            hoveredDate = hovering ? cell.date : nil
+        }
+        .help(cellTooltip(cell))
+    }
+
+    private func cellTextColor(_ cell: CalendarDayCell) -> Color {
+        if cell.isFuture {
+            return .secondary.opacity(0.25)
+        }
+        if cell.isSelected {
+            return .white
+        }
+        if !cell.isCurrentMonth {
+            return .secondary.opacity(0.4)
+        }
+        if cell.screenshotCount > 0 {
+            return .primary
+        }
+        return .secondary
+    }
+
+    private static let shortDateFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateStyle = .medium
+        return f
+    }()
+
+    private func cellTooltip(_ cell: CalendarDayCell) -> String {
+        let dateStr = Self.shortDateFormatter.string(from: cell.date)
+        if cell.screenshotCount > 0 {
+            return "\(dateStr): \(cell.screenshotCount) screenshot\(cell.screenshotCount == 1 ? "" : "s")"
+        }
+        return dateStr
     }
 
     private func showPreviousMonth() {
         guard let newMonth = calendar.date(byAdding: .month, value: -1, to: visibleMonth) else { return }
-        visibleMonth = calendar.startOfMonth(for: newMonth)
+        withAnimation(.spring(response: 0.25, dampingFraction: 0.85)) {
+            visibleMonth = calendar.startOfMonth(for: newMonth)
+        }
     }
 
     private func showNextMonth() {
         guard canShowNextMonth else { return }
         guard let newMonth = calendar.date(byAdding: .month, value: 1, to: visibleMonth) else { return }
-        visibleMonth = calendar.startOfMonth(for: newMonth)
-    }
-
-    private var monthSwipeGesture: some Gesture {
-        DragGesture(minimumDistance: 20)
-            .updating($dragTranslation) { value, state, _ in
-                state = value.translation.width
-            }
-            .onEnded { value in
-                let horizontal = value.translation.width
-                let vertical = value.translation.height
-                guard abs(horizontal) > abs(vertical), abs(horizontal) > 40 else { return }
-
-                withAnimation(.spring(response: 0.28, dampingFraction: 0.88)) {
-                    if horizontal < 0 {
-                        showNextMonth()
-                    } else {
-                        showPreviousMonth()
-                    }
-                }
-            }
-    }
-
-    private func isSelected(_ date: Date) -> Bool {
-        calendar.isDate(date, inSameDayAs: selectedDate)
-    }
-
-    private func textColor(for date: Date, isCurrentMonth: Bool) -> Color {
-        if date > Date() {
-            return .secondary.opacity(0.28)
+        withAnimation(.spring(response: 0.25, dampingFraction: 0.85)) {
+            visibleMonth = calendar.startOfMonth(for: newMonth)
         }
-        if isSelected(date) {
-            return .white
-        }
-        return isCurrentMonth ? .primary : .secondary.opacity(0.5)
     }
 
-    private func screenshotCount(for date: Date, isCurrentMonth: Bool) -> Int? {
-        guard isCurrentMonth, date <= Date() else { return nil }
-        let count = datesWithScreenshots[calendar.startOfDay(for: date)] ?? 0
-        return count > 0 ? count : nil
-    }
-}
-
-private struct CalendarCell: Identifiable {
-    let date: Date
-    let isCurrentMonth: Bool
-
-    var id: TimeInterval { date.timeIntervalSinceReferenceDate }
-}
-
-private enum CalendarSwipeDirection {
-    case previous
-    case next
-}
-
-private struct TrackpadSwipeCatcher: NSViewRepresentable {
-    let onSwipe: (CalendarSwipeDirection) -> Void
-
-    func makeNSView(context: Context) -> SwipeCaptureView {
-        let view = SwipeCaptureView()
-        view.onSwipe = onSwipe
-        return view
-    }
-
-    func updateNSView(_ nsView: SwipeCaptureView, context: Context) {
-        nsView.onSwipe = onSwipe
-    }
-}
-
-private final class SwipeCaptureView: NSView {
-    var onSwipe: ((CalendarSwipeDirection) -> Void)?
-    private var accumulatedHorizontalDelta: CGFloat = 0
-    private var didTriggerSwipeInCurrentGesture = false
-    private let swipeActivationThreshold: CGFloat = 90
-
-    override init(frame frameRect: NSRect) {
-        super.init(frame: frameRect)
-        wantsLayer = true
-        layer?.backgroundColor = NSColor.clear.cgColor
-    }
-
-    required init?(coder: NSCoder) {
-        fatalError("init(coder:) has not been implemented")
-    }
-
-    // Forward mouse events so clicks/taps pass through to SwiftUI views below
-    override func mouseDown(with event: NSEvent) { nextResponder?.mouseDown(with: event) }
-    override func mouseUp(with event: NSEvent) { nextResponder?.mouseUp(with: event) }
-    override func mouseDragged(with event: NSEvent) { nextResponder?.mouseDragged(with: event) }
-    override func mouseMoved(with event: NSEvent) { nextResponder?.mouseMoved(with: event) }
-    override func rightMouseDown(with event: NSEvent) { nextResponder?.rightMouseDown(with: event) }
-
-    override func scrollWheel(with event: NSEvent) {
-        let deltaX = event.scrollingDeltaX
-        let deltaY = event.scrollingDeltaY
-
-        if event.phase == .began {
-            accumulatedHorizontalDelta = 0
-            didTriggerSwipeInCurrentGesture = false
-        }
-
-        guard abs(deltaX) > abs(deltaY), abs(deltaX) > 0 else {
-            super.scrollWheel(with: event)
-            return
-        }
-
-        guard !didTriggerSwipeInCurrentGesture else {
-            if event.phase == .ended || event.momentumPhase == .ended || event.phase == .cancelled {
-                accumulatedHorizontalDelta = 0
-                didTriggerSwipeInCurrentGesture = false
-            }
-            return
-        }
-
-        accumulatedHorizontalDelta += deltaX
-
-        if accumulatedHorizontalDelta >= swipeActivationThreshold {
-            accumulatedHorizontalDelta = 0
-            didTriggerSwipeInCurrentGesture = true
-            onSwipe?(.previous)
-        } else if accumulatedHorizontalDelta <= -swipeActivationThreshold {
-            accumulatedHorizontalDelta = 0
-            didTriggerSwipeInCurrentGesture = true
-            onSwipe?(.next)
-        }
-
-        if event.phase == .ended || event.momentumPhase == .ended || event.phase == .cancelled {
-            accumulatedHorizontalDelta = 0
-            didTriggerSwipeInCurrentGesture = false
+    private func jumpToCurrentMonth() {
+        withAnimation(.spring(response: 0.25, dampingFraction: 0.85)) {
+            visibleMonth = calendar.startOfMonth(for: Date())
         }
     }
 }

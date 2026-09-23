@@ -291,6 +291,11 @@ final class MenuBarViewModel: ObservableObject {
         appliedDateFilter = calendar.startOfDay(for: selectedDate)
     }
 
+    func applyDate(_ date: Date) {
+        selectDate(date)
+        applySelectedDateFilter()
+    }
+
     func clearDateFilter() {
         appliedDateFilter = nil
         let today = calendar.startOfDay(for: Date())
@@ -304,14 +309,73 @@ final class MenuBarViewModel: ObservableObject {
         visibleMonth = calendar.startOfMonth(for: today)
     }
 
+    func applyToday() {
+        selectToday()
+        applySelectedDateFilter()
+    }
+
     func selectYesterday() {
         guard let yesterday = calendar.date(byAdding: .day, value: -1, to: Date()) else { return }
         selectedDate = calendar.startOfDay(for: yesterday)
         visibleMonth = calendar.startOfMonth(for: selectedDate)
     }
 
+    func applyYesterday() {
+        selectYesterday()
+        applySelectedDateFilter()
+    }
+
     var browsingByDate: Bool {
         appliedDateFilter != nil
+    }
+
+    var isTodayFiltered: Bool {
+        guard let filter = appliedDateFilter else { return false }
+        return calendar.isDateInToday(filter)
+    }
+
+    var isYesterdayFiltered: Bool {
+        guard let filter = appliedDateFilter else { return false }
+        return calendar.isDateInYesterday(filter)
+    }
+
+    var todayScreenshotCount: Int {
+        let today = calendar.startOfDay(for: Date())
+        return datesWithScreenshots[today] ?? 0
+    }
+
+    var yesterdayScreenshotCount: Int {
+        guard let yesterday = calendar.date(byAdding: .day, value: -1, to: Date()) else { return 0 }
+        return datesWithScreenshots[calendar.startOfDay(for: yesterday)] ?? 0
+    }
+
+    /// Sorted unique dates that contain screenshots, newest first.
+    var recordedDays: [Date] {
+        datesWithScreenshots.keys.sorted(by: >)
+    }
+
+    /// Day with screenshots chronologically before the active date filter.
+    var previousRecordedDate: Date? {
+        guard let current = appliedDateFilter else { return nil }
+        return recordedDays.first(where: { $0 < current })
+    }
+
+    /// Day with screenshots chronologically after the active date filter.
+    var nextRecordedDate: Date? {
+        guard let current = appliedDateFilter else { return nil }
+        return recordedDays.last(where: { $0 > current })
+    }
+
+    func selectPreviousRecordedDate() {
+        if let prev = previousRecordedDate {
+            applyDate(prev)
+        }
+    }
+
+    func selectNextRecordedDate() {
+        if let next = nextRecordedDate {
+            applyDate(next)
+        }
     }
 
     var filteredHistoryItems: [ScreenshotHistoryItem] {
@@ -321,6 +385,16 @@ final class MenuBarViewModel: ObservableObject {
         return screenshotStore.screenshots
             .filter { calendar.isDate($0.date, inSameDayAs: filterDate) }
             .map { $0.toHistoryItem() }
+    }
+
+    func filteredHistoryItems(matching query: String) -> [ScreenshotHistoryItem] {
+        let items = filteredHistoryItems
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !trimmed.isEmpty else { return items }
+        return items.filter { item in
+            item.filename.lowercased().contains(trimmed) ||
+            item.displayTime.lowercased().contains(trimmed)
+        }
     }
 
     var datesWithScreenshots: [Date: Int] {
