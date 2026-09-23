@@ -4,9 +4,10 @@ import AppKit
 ///
 /// Transient UI (menu bar menus, popovers, tooltips) is preserved by capturing a
 /// freeze-frame *before* this window appears (`CaptureCoordinator` +
-/// `ScreenCapture.captureFullDisplay`). Avoiding `NSApp.activate` is still
-/// helpful while the overlay is up, but freeze-frame is what keeps menus in the
-/// final crop after the user clicks Confirm.
+/// `ScreenCapture.captureFullDisplay`). After the freeze, the coordinator may
+/// activate the app so local input delivery is reliable; the crop still comes
+/// from the frozen image, so Confirm cannot lose menus that were already
+/// captured.
 final class OverlayWindow: NSWindow {
     init(screen: NSScreen) {
         super.init(
@@ -44,9 +45,9 @@ final class OverlayWindow: NSWindow {
         }
     }
 
-    /// Key status helps SwiftUI button behavior, but capture controls themselves
-    /// are Carbon global hotkeys because the previously active app still owns
-    /// keyboard focus. We must never activate here and dismiss transient UI.
+    /// Key status helps SwiftUI button behavior. Capture Esc/Enter/⌘↩ are also
+    /// handled via Carbon hotkeys in `HotkeyManager` as a belt-and-suspenders
+    /// path while the overlay is up.
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
 }

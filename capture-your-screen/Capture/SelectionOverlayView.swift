@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import Combine
 import CoreGraphics
 
 /// Full-screen SwiftUI overlay for area selection.
@@ -27,6 +28,11 @@ struct SelectionOverlayView: View {
     @State private var lastHoverLocation: CGPoint? = nil
     @State private var isSelectionFinalized: Bool = false
     @State private var showKeyVisualizer: Bool = false
+    /// Buttons of a selection just dismissed with X. Kept until the pointer leaves
+    /// them so unlock stays on the last hover window instead of the window under X.
+    @State private var dismissChrome: [CGRect] = []
+    /// Stable ~60 Hz cursor poll while this overlay is mounted.
+    @StateObject private var hoverTicker = OverlayHoverTicker()
 
     private let minSelectionSize: CGFloat = 10
     private let clickSelectionThreshold: CGFloat = 6
@@ -49,14 +55,14 @@ struct SelectionOverlayView: View {
                 // clicks can never be stolen by the zero-distance drag gesture.
                 interactionCanvas(size: geo.size)
 
-                // Selection border and action buttons
+                // Selection border and action buttons.
+                // Buttons are available on hover preselect — no click-lock required
+                // to Confirm / Quick Save (WeChat-style). Click still locks.
                 if let rect = selection, rect.width >= minSelectionSize, rect.height >= minSelectionSize {
                     selectionBorder(rect: rect)
                         .allowsHitTesting(false)
 
-                    if isSelectionFinalized {
-                        actionButtons(for: rect, canvasSize: geo.size)
-                    }
+                    actionButtons(for: rect, canvasSize: geo.size)
                 }
 
                 // Instruction label — fixed at top, never moves
@@ -78,11 +84,31 @@ struct SelectionOverlayView: View {
             .onChange(of: selection) { _, newSelection in
                 onSelectionChanged(newSelection)
             }
+            // Primary hover driver: poll the cursor on the main run loop.
+            // NSEvent local/global monitors miss moves when our inactive-app
+            // overlay eats events; NSTrackingArea under NSHostingView is flaky.
+            // Reading NSEvent.mouseLocation needs no extra permission.
+            .onChange(of: hoverTicker.tick) { _, _ in
+                guard !isSelectionFinalized, dragStart == nil else { return }
+                let local = CaptureWindowSelection.screenLocalPoint(
+                    fromCocoaGlobal: NSEvent.mouseLocation,
+                    on: screen
+                )
+                applyPointerMove(to: local, canvasSize: geo.size)
+            }
             .onAppear {
                 NSCursor.crosshair.push()
                 if let initialSelection {
                     selection = initialSelection
+                    // Seed hover location so unlock / protected-UI logic has a
+                    // real point even if the pointer never moves.
+                    let local = CaptureWindowSelection.screenLocalPoint(
+                        fromCocoaGlobal: NSEvent.mouseLocation,
+                        on: screen
+                    )
+                    lastHoverLocation = local
                     // Initial geometry is a hover proposal; click locks it.
+                    // Confirm / Quick Save work without locking.
                     isSelectionFinalized = false
                     onSelectionChanged(initialSelection)
                 } else {
@@ -151,7 +177,7 @@ struct SelectionOverlayView: View {
     }
 
     private var instructionLabel: some View {
-        Text("Move to target, click to lock, or drag — Esc cancel, ⌘↩ quick save, ↵ annotate")
+        Text("Hover to select · click to lock · drag to crop — Esc cancel, ⌘↩ quick save, ↵ annotate")
             .font(.system(size: 13, weight: .medium))
             .foregroundColor(.white)
             .padding(.horizontal, 16)
@@ -185,18 +211,35 @@ struct SelectionOverlayView: View {
             selection: selection,
             lastHoverLocation: lastHoverLocation,
             isSelectionFinalized: isSelectionFinalized,
-            isDragging: dragStart != nil
+            isDragging: dragStart != nil,
+            dismissChrome: dismissChrome
         )
-        guard session.pointerMoved(
+        let protected = protectedUIRects(canvasSize: canvasSize)
+        let changed = session.pointerMoved(
             to: location,
             candidates: windowCandidates,
-            screenSize: canvasSize
-        ) else {
-            lastHoverLocation = session.lastHoverLocation
-            return
-        }
+            screenSize: canvasSize,
+            protectedRects: protected
+        )
+        dismissChrome = session.dismissChrome
         lastHoverLocation = session.lastHoverLocation
-        selection = session.selection
+        if changed {
+            selection = session.selection
+        }
+    }
+
+    /// Action chrome must not become a "window" under the cursor and must not
+    /// clear the hover proposal while the user aims for Confirm / Quick Save.
+    private func protectedUIRects(canvasSize: CGSize) -> [CGRect] {
+        guard let rect = selection,
+              rect.width >= minSelectionSize,
+              rect.height >= minSelectionSize else { return [] }
+        return [
+            SelectionOverlayLayout.actionControlsFrame(
+                selectionRect: rect,
+                canvasSize: canvasSize
+            )
+        ]
     }
 
     private var dragGesture: some Gesture {
@@ -265,23 +308,27 @@ struct SelectionOverlayView: View {
         HStack(spacing: 12) {
             // X button — cancel selection and let user re-select via hover immediately
             Button(action: {
+                let chrome = protectedUIRects(canvasSize: canvasSize)
                 var session = OverlayHoverSession(
                     selection: selection,
                     lastHoverLocation: lastHoverLocation,
                     isSelectionFinalized: true,
                     isDragging: false
                 )
-                session.unlock(candidates: windowCandidates, screenSize: canvasSize)
-                isSelectionFinalized = session.isSelectionFinalized
-                lastHoverLocation = session.lastHoverLocation
-                selection = session.selection
-                // Re-snap under the live cursor so the next move is not required
-                // to "wake" tracking after unlock.
                 let live = CaptureWindowSelection.screenLocalPoint(
                     fromCocoaGlobal: NSEvent.mouseLocation,
                     on: screen
                 )
-                applyPointerMove(to: live, canvasSize: canvasSize)
+                session.unlock(
+                    candidates: windowCandidates,
+                    screenSize: canvasSize,
+                    livePoint: live,
+                    clickedChrome: chrome
+                )
+                isSelectionFinalized = session.isSelectionFinalized
+                lastHoverLocation = session.lastHoverLocation
+                selection = session.selection
+                dismissChrome = session.dismissChrome
             }) {
                 Image(systemName: "xmark")
                     .font(.system(size: 14, weight: .bold))
@@ -365,5 +412,25 @@ struct SelectionOverlayView: View {
             CGPoint(x: rect.minX, y: rect.maxY),
             CGPoint(x: rect.minX, y: rect.midY),
         ]
+    }
+}
+
+/// Drives WeChat-style continuous window snap by publishing a tick while mounted.
+final class OverlayHoverTicker: ObservableObject {
+    @Published private(set) var tick: UInt64 = 0
+    private var timer: Timer?
+
+    init() {
+        let timer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
+            // Timer is scheduled on the main run loop.
+            self?.tick &+= 1
+        }
+        timer.tolerance = 1.0 / 120.0
+        RunLoop.main.add(timer, forMode: .common)
+        self.timer = timer
+    }
+
+    deinit {
+        timer?.invalidate()
     }
 }

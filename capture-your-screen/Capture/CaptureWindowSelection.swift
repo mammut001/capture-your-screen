@@ -14,6 +14,16 @@ struct CaptureWindowCandidate: Equatable {
 enum CaptureWindowSelection {
     private static let minimumSize: CGFloat = 10
 
+    /// System processes that publish shield / wallpaper windows which sit above
+    /// real app windows in CGWindowList order and would otherwise steal every
+    /// hover hit (especially Dock's full-screen layer-20 window).
+    private static let excludedOwnerNames: Set<String> = [
+        "Dock",
+        "Window Server",
+        "Wallpaper",
+        "Backstop",
+    ]
+
     /// Snapshot every useful window on the target screen. The returned order is
     /// the CGWindowList front-to-back order and must remain stable while frozen.
     static func snapshot(on screen: NSScreen, ownPID: pid_t = ProcessInfo.processInfo.processIdentifier) -> [CaptureWindowCandidate] {
@@ -38,6 +48,9 @@ enum CaptureWindowSelection {
             let pid = (info[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value ?? 0
             guard pid != 0, pid != ownPID else { return nil }
 
+            let ownerName = info[kCGWindowOwnerName as String] as? String ?? ""
+            guard !excludedOwnerNames.contains(ownerName) else { return nil }
+
             let alpha = (info[kCGWindowAlpha as String] as? NSNumber)?.doubleValue ?? 1
             guard alpha > 0.05 else { return nil }
 
@@ -61,58 +74,93 @@ enum CaptureWindowSelection {
                 height: clipped.height
             ).integral
 
+            let layer = (info[kCGWindowLayer as String] as? NSNumber)?.intValue ?? 0
+            // Drop remaining near-fullscreen shields (e.g. some Stage Manager /
+            // mission-control backdrops) that are not normal app windows.
+            if isNearFullscreenShield(local, screenSize: screenFrame.size, layer: layer) {
+                return nil
+            }
+
             return CaptureWindowCandidate(
                 windowID: (info[kCGWindowNumber as String] as? NSNumber)?.uint32Value ?? 0,
                 ownerPID: pid,
-                ownerName: info[kCGWindowOwnerName as String] as? String ?? "",
-                layer: (info[kCGWindowLayer as String] as? NSNumber)?.intValue ?? 0,
+                ownerName: ownerName,
+                layer: layer,
                 screenLocalBounds: local,
                 frontToBackOrder: order
             )
         }
     }
 
-    /// Find the frozen candidate a pointer should snap to. Direct containment
-    /// follows z-order. When the pointer remains on a menu-bar icon, prefer the
-    /// open, nearby popover instead of the tiny status-item window.
+    /// True for non-standard-layer windows that cover essentially the whole
+    /// screen — these steal hover from every real window underneath.
+    private static func isNearFullscreenShield(
+        _ rect: CGRect,
+        screenSize: CGSize,
+        layer: Int
+    ) -> Bool {
+        guard layer != 0 else { return false }
+        let coversWidth = rect.width >= screenSize.width * 0.95
+        let coversHeight = rect.height >= screenSize.height * 0.95
+        return coversWidth && coversHeight
+    }
+
+    /// Rectangle for a pointer: the frontmost window that contains the point.
+    /// Area is not a tie-break — a smaller window in front beats a larger one
+    /// behind it, and a larger window in front beats a smaller one behind it.
+    /// Empty space returns nil. The only expansion past strict containment is a
+    /// menu-bar status item, which selects that same owner's nearby open popover.
     static func selectionRect(
         at point: CGPoint,
         candidates: [CaptureWindowCandidate],
         screenSize: CGSize
     ) -> CGRect? {
-        let direct = candidates.first { $0.screenLocalBounds.contains(point) }
+        let hit = frontmostCandidate(among: candidates, containing: point)
 
-        if point.y <= 44 {
-            if let direct,
-               !isMenuBarChrome(direct.screenLocalBounds, screenSize: screenSize) {
-                return direct.screenLocalBounds
-            }
-
-            let preferredOwner = direct?.ownerPID
-            let anchored = candidates.first { candidate in
-                let rect = candidate.screenLocalBounds
-                guard rect.width >= 100,
-                      rect.height >= 60,
-                      rect.width < screenSize.width * 0.9,
-                      rect.minY <= 180,
-                      horizontalDistance(from: point.x, to: rect) <= 48 else { return false }
-                return preferredOwner == nil || candidate.ownerPID == preferredOwner
-            }
-            if let anchored { return anchored.screenLocalBounds }
-
-            // Some system status items and their panels use different owner
-            // processes. Fall back to the nearest frontmost anchored panel.
-            if let nearby = candidates.first(where: { candidate in
-                let rect = candidate.screenLocalBounds
-                return rect.width >= 100 && rect.height >= 60 && rect.minY <= 180
-                    && rect.width < screenSize.width * 0.9
-                    && horizontalDistance(from: point.x, to: rect) <= 48
-            }) {
-                return nearby.screenLocalBounds
-            }
+        if point.y <= 44,
+           let hit,
+           isMenuBarStatusItem(hit.screenLocalBounds),
+           let popover = sameOwnerMenuBarPopover(
+               near: point,
+               ownerPID: hit.ownerPID,
+               candidates: candidates,
+               screenSize: screenSize
+           ) {
+            return popover.screenLocalBounds
         }
 
-        return direct?.screenLocalBounds
+        return hit?.screenLocalBounds
+    }
+
+    /// Lowest `frontToBackOrder` wins. Callers may pass the list in any order.
+    private static func frontmostCandidate(
+        among candidates: [CaptureWindowCandidate],
+        containing point: CGPoint
+    ) -> CaptureWindowCandidate? {
+        candidates
+            .filter { $0.screenLocalBounds.contains(point) }
+            .min { $0.frontToBackOrder < $1.frontToBackOrder }
+    }
+
+    /// Nearby open panel belonging to the status item under the pointer.
+    /// A different owner's panel is never a substitute.
+    private static func sameOwnerMenuBarPopover(
+        near point: CGPoint,
+        ownerPID: pid_t,
+        candidates: [CaptureWindowCandidate],
+        screenSize: CGSize
+    ) -> CaptureWindowCandidate? {
+        candidates
+            .filter { candidate in
+                guard candidate.ownerPID == ownerPID else { return false }
+                let rect = candidate.screenLocalBounds
+                return rect.width >= 100
+                    && rect.height >= 60
+                    && rect.width < screenSize.width * 0.9
+                    && rect.minY <= 180
+                    && horizontalDistance(from: point.x, to: rect) <= 48
+            }
+            .min { $0.frontToBackOrder < $1.frontToBackOrder }
     }
 
     static func screenLocalPoint(fromCocoaGlobal point: CGPoint, on screen: NSScreen) -> CGPoint {
@@ -130,13 +178,42 @@ enum CaptureWindowSelection {
         )
     }
 
-    private static func isMenuBarChrome(_ rect: CGRect, screenSize: CGSize) -> Bool {
-        rect.height <= 50 || (rect.width >= screenSize.width * 0.9 && rect.minY <= 44)
+    /// Menu-bar status icons are small. A short full-width bar, or a maximized
+    /// window whose top sits at `minY <= 44`, is a normal hit — do not expand
+    /// it into a same-owner panel behind it.
+    private static func isMenuBarStatusItem(_ rect: CGRect) -> Bool {
+        rect.minY <= 44 && rect.width <= 80 && rect.height <= 44
     }
 
     private static func horizontalDistance(from x: CGFloat, to rect: CGRect) -> CGFloat {
         if rect.minX...rect.maxX ~= x { return 0 }
         return min(abs(x - rect.minX), abs(x - rect.maxX))
+    }
+}
+
+/// Layout helpers shared by the overlay and hit-testing (keep UI chrome out of
+/// window auto-select).
+enum SelectionOverlayLayout {
+    /// Approximate frame of the X / Quick Save / Confirm control cluster.
+    /// Coordinates match `SelectionOverlayView.actionButtons` positioning.
+    static func actionControlsFrame(
+        selectionRect rect: CGRect,
+        canvasSize: CGSize
+    ) -> CGRect {
+        let barWidth: CGFloat = 220
+        let barHeight: CGFloat = 40
+        let centerX = min(max(rect.midX, 100), max(100, canvasSize.width - 100))
+        let centerY = rect.maxY + 50 <= canvasSize.height
+            ? rect.maxY + 30
+            : max(24, rect.minY - 30)
+        // Slightly padded so cursor can approach the buttons without snapping
+        // the highlight to whatever window sits underneath the chrome.
+        return CGRect(
+            x: centerX - barWidth / 2,
+            y: centerY - barHeight / 2,
+            width: barWidth,
+            height: barHeight
+        ).insetBy(dx: -10, dy: -10)
     }
 }
 
@@ -148,16 +225,31 @@ struct OverlayHoverSession: Equatable {
     var lastHoverLocation: CGPoint?
     var isSelectionFinalized: Bool = false
     var isDragging: Bool = false
+    /// Action cluster of a rect just dismissed with X. Moves inside it keep the
+    /// last-hover selection until the pointer leaves, including the hover ticker
+    /// that follows the click.
+    var dismissChrome: [CGRect] = []
 
     /// Apply a pointer move in screen-local top-left coordinates.
     /// Returns `true` when `selection` changed.
+    ///
+    /// Points inside `protectedRects` or `dismissChrome` keep the current
+    /// selection and do not overwrite `lastHoverLocation`.
     @discardableResult
     mutating func pointerMoved(
         to point: CGPoint,
         candidates: [CaptureWindowCandidate],
-        screenSize: CGSize
+        screenSize: CGSize,
+        protectedRects: [CGRect] = []
     ) -> Bool {
         guard !isSelectionFinalized, !isDragging else { return false }
+        let onDismissedChrome = dismissChrome.contains { $0.contains(point) }
+        if !dismissChrome.isEmpty, !onDismissedChrome {
+            dismissChrome = []
+        }
+        if onDismissedChrome || protectedRects.contains(where: { $0.contains(point) }) {
+            return false
+        }
         lastHoverLocation = point
         let next = CaptureWindowSelection.selectionRect(
             at: point,
@@ -169,16 +261,28 @@ struct OverlayHoverSession: Equatable {
         return true
     }
 
-    /// Unlock after the user presses X — resume hover from the last known point.
+    /// Unlock after the user presses X. The selection becomes the frontmost
+    /// window at `lastHoverLocation`. A live pointer still inside `clickedChrome`
+    /// (the buttons of the rect being dismissed) does not replace that result.
     mutating func unlock(
         candidates: [CaptureWindowCandidate],
-        screenSize: CGSize
+        screenSize: CGSize,
+        livePoint: CGPoint? = nil,
+        clickedChrome: [CGRect] = []
     ) {
         isSelectionFinalized = false
         isDragging = false
+        dismissChrome = clickedChrome
         if let lastHoverLocation {
             selection = CaptureWindowSelection.selectionRect(
                 at: lastHoverLocation,
+                candidates: candidates,
+                screenSize: screenSize
+            )
+        }
+        if let livePoint {
+            pointerMoved(
+                to: livePoint,
                 candidates: candidates,
                 screenSize: screenSize
             )

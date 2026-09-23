@@ -2,11 +2,18 @@
 //  OverlayMouseMoveMonitor.swift
 //  capture-your-screen
 //
-//  Reliable pointer tracking for the capture overlay. SwiftUI's
-//  `onContinuousHover` often needs a priming click when the app is not
-//  activated (we avoid NSApp.activate to keep menus alive). An NSTrackingArea
-//  with `.activeAlways`, plus a global mouse-moved monitor, updates proposals
-//  as soon as the pointer moves.
+//  Pointer tracking for the capture overlay.
+//
+//  We intentionally do NOT rely on NSApp.activate while the overlay is up
+//  (historically to keep live menus; now freeze-frame covers that, but other
+//  apps may still be "active"). In that state:
+//    • local NSEvent monitors often see nothing
+//    • global monitors miss events delivered to *our* overlay window
+//    • SwiftUI/NSTrackingArea mouseMoved is unreliable under NSHostingView
+//
+//  So the source of truth is a short display-link-style poll of
+//  `NSEvent.mouseLocation` — same approach many macOS region-capture tools use.
+//  Event monitors remain as a low-latency supplement when they do fire.
 //
 
 import AppKit
@@ -14,9 +21,9 @@ import SwiftUI
 
 /// Full-view mouse-move sensor in screen-local **top-left** coordinates.
 struct OverlayMouseMoveMonitor: NSViewRepresentable {
-    /// When false, tracking areas/monitors stay installed but moves are ignored
-    /// by the coordinator (finalized / dragging). Keeping the view alive avoids
-    /// re-install lag after unlock.
+    /// When false, tracking stays installed but moves are ignored
+    /// (finalized / dragging). Keeping the view alive avoids re-install lag
+    /// after unlock.
     var isEnabled: Bool
     var screen: NSScreen
     var onMove: (CGPoint) -> Void
@@ -38,6 +45,11 @@ struct OverlayMouseMoveMonitor: NSViewRepresentable {
         context.coordinator.isEnabled = isEnabled
         nsView.coordinator = context.coordinator
         nsView.updateTrackingAreas()
+        // Re-emit immediately when re-enabled (e.g. after unlock) so the
+        // proposal matches the live cursor without waiting for a move.
+        if isEnabled {
+            context.coordinator.emitCurrentPointerIfNeeded(force: true)
+        }
     }
 
     static func dismantleNSView(_ nsView: OverlayMouseMoveNSView, coordinator: Coordinator) {
@@ -48,10 +60,20 @@ struct OverlayMouseMoveMonitor: NSViewRepresentable {
     final class Coordinator {
         var onMove: (CGPoint) -> Void
         var screen: NSScreen
-        var isEnabled: Bool
+        var isEnabled: Bool {
+            didSet {
+                if isEnabled {
+                    startPolling()
+                    emitCurrentPointerIfNeeded(force: true)
+                }
+            }
+        }
+
         private weak var view: OverlayMouseMoveNSView?
         private var globalMonitor: Any?
         private var localMonitor: Any?
+        private var pollTimer: Timer?
+        private var lastEmittedPoint: CGPoint?
 
         init(onMove: @escaping (CGPoint) -> Void, screen: NSScreen, isEnabled: Bool) {
             self.onMove = onMove
@@ -62,9 +84,12 @@ struct OverlayMouseMoveMonitor: NSViewRepresentable {
         func attach(view: OverlayMouseMoveNSView) {
             self.view = view
             installMonitorsIfNeeded()
+            startPolling()
+            emitCurrentPointerIfNeeded(force: true)
         }
 
         func detach() {
+            stopPolling()
             if let globalMonitor {
                 NSEvent.removeMonitor(globalMonitor)
                 self.globalMonitor = nil
@@ -74,6 +99,7 @@ struct OverlayMouseMoveMonitor: NSViewRepresentable {
                 self.localMonitor = nil
             }
             view = nil
+            lastEmittedPoint = nil
         }
 
         func handleLocalMove(in view: NSView, event: NSEvent) {
@@ -81,22 +107,53 @@ struct OverlayMouseMoveMonitor: NSViewRepresentable {
             let appKit = view.convert(event.locationInWindow, from: nil)
             // AppKit is bottom-left; overlay selection uses top-left.
             let topLeft = CGPoint(x: appKit.x, y: view.bounds.height - appKit.y)
-            onMove(topLeft)
+            emit(topLeft)
         }
 
         func handleScreenLocalMove() {
-            guard isEnabled, view?.window != nil else { return }
+            emitCurrentPointerIfNeeded(force: false)
+        }
+
+        func emitCurrentPointerIfNeeded(force: Bool) {
+            // Do not require `view.window` — under SwiftUI the representable can
+            // briefly lack a window while the overlay is already interactive;
+            // SelectionOverlayView's HoverTicker is the primary driver anyway.
+            guard isEnabled else { return }
             let cocoa = NSEvent.mouseLocation
             guard NSMouseInRect(cocoa, screen.frame, false) else { return }
             let topLeft = CaptureWindowSelection.screenLocalPoint(fromCocoaGlobal: cocoa, on: screen)
+            if !force, let last = lastEmittedPoint,
+               abs(last.x - topLeft.x) < 0.5, abs(last.y - topLeft.y) < 0.5 {
+                return
+            }
+            emit(topLeft)
+        }
+
+        private func emit(_ topLeft: CGPoint) {
+            lastEmittedPoint = topLeft
             onMove(topLeft)
+        }
+
+        private func startPolling() {
+            guard pollTimer == nil else { return }
+            // ~60 Hz is enough for WeChat-like continuous snap; cheap hit-test only.
+            let timer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
+                self?.emitCurrentPointerIfNeeded(force: false)
+            }
+            timer.tolerance = 1.0 / 120.0
+            RunLoop.main.add(timer, forMode: .common)
+            pollTimer = timer
+        }
+
+        private func stopPolling() {
+            pollTimer?.invalidate()
+            pollTimer = nil
         }
 
         private func installMonitorsIfNeeded() {
             if globalMonitor == nil {
-                // When we skip NSApp.activate, another app stays active — global
-                // mouse-moved is the reliable signal (no priming click).
                 globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.mouseMoved]) { [weak self] _ in
+                    // May be nil when events land on our own overlay; polling covers that.
                     DispatchQueue.main.async {
                         self?.handleScreenLocalMove()
                     }
@@ -120,7 +177,7 @@ final class OverlayMouseMoveNSView: NSView {
     override var isFlipped: Bool { false }
 
     /// Let drag/click gestures on the SwiftUI canvas win hit-testing; we only
-    /// need tracking areas + event monitors for hover proposals.
+    /// need tracking areas + polling for hover proposals.
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
 
     override func updateTrackingAreas() {
@@ -150,5 +207,6 @@ final class OverlayMouseMoveNSView: NSView {
         super.viewDidMoveToWindow()
         window?.acceptsMouseMovedEvents = true
         updateTrackingAreas()
+        coordinator?.emitCurrentPointerIfNeeded(force: true)
     }
 }

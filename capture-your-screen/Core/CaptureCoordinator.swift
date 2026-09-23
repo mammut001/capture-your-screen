@@ -133,13 +133,7 @@ final class CaptureCoordinator: ObservableObject {
         let generation = captureGeneration
         state = .capturing
         clearFrozenCapture()
-        frozenWindowCandidates = CaptureWindowSelection.snapshot(on: screen)
-        let localPointer = CaptureWindowSelection.screenLocalPoint(fromCocoaGlobal: NSEvent.mouseLocation, on: screen)
-        currentCaptureSelection = CaptureWindowSelection.selectionRect(
-            at: localPointer,
-            candidates: frozenWindowCandidates,
-            screenSize: screen.frame.size
-        )
+        currentCaptureSelection = nil
         hotkeyManager.beginCaptureKeyInterception { [weak self] command in
             Task { @MainActor in
                 self?.handleCaptureKeyCommand(command, screen: screen)
@@ -149,10 +143,22 @@ final class CaptureCoordinator: ObservableObject {
         // Freeze the live display *before* showing the overlay. Confirm /
         // Quick Save clicks would otherwise dismiss menus/popovers before a
         // second live capture could see them.
+        // Snapshot window geometry immediately after the freeze so candidates
+        // match the frozen pixels; mouse moves only hit-test that list.
         Task { [weak self] in
             do {
                 let frozen = try await ScreenCapture.captureFullDisplay(displayID: screen.directDisplayID)
                 guard let self, self.captureGeneration == generation, self.state == .capturing else { return }
+                self.frozenWindowCandidates = CaptureWindowSelection.snapshot(on: screen)
+                let localPointer = CaptureWindowSelection.screenLocalPoint(
+                    fromCocoaGlobal: NSEvent.mouseLocation,
+                    on: screen
+                )
+                self.currentCaptureSelection = CaptureWindowSelection.selectionRect(
+                    at: localPointer,
+                    candidates: self.frozenWindowCandidates,
+                    screenSize: screen.frame.size
+                )
                 self.presentSelectionOverlay(screen: screen, frozenImage: frozen)
             } catch {
                 guard let self, self.captureGeneration == generation else { return }
@@ -210,9 +216,11 @@ final class CaptureCoordinator: ObservableObject {
         hostingView.frame = window.contentRect(forFrameRect: window.frame)
         window.contentView = hostingView
         window.makeKeyAndOrderFront(nil)
-        // NOTE: We intentionally do NOT call NSApp.activate(ignoringOtherApps:).
-        // Freeze-frame capture already preserved transient UI; avoiding activate
-        // still helps while the overlay is up.
+        // Freeze-frame already preserved menus/popovers in `frozenImage`, so
+        // activating is safe for the final crop. Becoming active makes local
+        // mouse/key delivery reliable; hover still primarily tracks via the
+        // overlay pointer poller (see OverlayMouseMoveMonitor).
+        NSApp.activate(ignoringOtherApps: true)
 
         self.overlayWindow = window
     }
