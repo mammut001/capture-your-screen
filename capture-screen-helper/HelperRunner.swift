@@ -7,7 +7,7 @@ import os
 private let logger = Logger(subsystem: "com.captureyourscreen.helper", category: "HelperRunner")
 
 enum HelperRunner {
-    static let helperVersion = "1.0.0"
+    static let helperVersion = "1.2.0"
 
     static func run(arguments: [String]) async -> Int32 {
         let args = Array(arguments.dropFirst())
