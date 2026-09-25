@@ -59,13 +59,6 @@ enum AnnotationCompositor {
         NSGraphicsContext.saveGraphicsState()
         NSGraphicsContext.current = ctx
 
-        // AppKit uses a bottom-left origin by default. Flip to top-left so our
-        // normalized coordinates (y-down) match expectations.
-        let flip = NSAffineTransform()
-        flip.translateX(by: 0, yBy: pixelHeight)
-        flip.scaleX(by: 1, yBy: -1)
-        flip.concat()
-
         // 1. Draw base image.
         NSImage(cgImage: baseRep, size: size).draw(
             in: NSRect(origin: .zero, size: size),
@@ -156,21 +149,11 @@ enum AnnotationCompositor {
         guard let ctx = NSGraphicsContext.current else { return }
         let cgCtx = ctx.cgContext
 
-        // makeImage() captures the bitmap as rendered. Since the context CTM is
-        // flipped (top-left origin), row 0 of the resulting CGImage is the
-        // visual top of the canvas.
         guard let cgImage = cgCtx.makeImage() else { return }
         let ciImage = CIImage(cgImage: cgImage)
 
-        // CIImage uses a bottom-left origin: CI y=0 is the image's bottom row,
-        // CI y=H is the top. Our `rect` has origin.y measured from the top
-        // (flipped context), so the equivalent CI origin is H - y - h.
-        let ciRect = CGRect(
-            x: rect.origin.x,
-            y: canvasSize.height - rect.origin.y - rect.height,
-            width: rect.width,
-            height: rect.height
-        )
+        // Both CIImage and unflipped AppKit context use bottom-left origin.
+        let ciRect = CGRect(origin: rect.origin, size: rect.size)
 
         // 1. Crop to the target region.
         let cropped = ciImage.cropped(to: ciRect)
@@ -189,19 +172,8 @@ enum AnnotationCompositor {
         // 4. Render to a CGImage via the shared CIContext, then draw back.
         guard let resultCGImage = sharedCIContext.createCGImage(positionedPixelated, from: positionedPixelated.extent) else { return }
 
-        // draw(in:from:operation:fraction:) without respectFlipped treats the
-        // destination rect in the un-flipped coordinate space (image row 0 at
-        // max-y). Combined with the flipped CTM (user y → device H-y), we must
-        // pass y = H - rect.maxY so the image lands at the correct device rows.
-        let flippedRect = NSRect(
-            x: rect.origin.x,
-            y: canvasSize.height - rect.maxY,
-            width: rect.width,
-            height: rect.height
-        )
-
         NSImage(cgImage: resultCGImage, size: rect.size).draw(
-            in: flippedRect,
+            in: rect,
             from: .zero,
             operation: .sourceOver,
             fraction: 1.0
@@ -212,19 +184,12 @@ enum AnnotationCompositor {
         guard let ctx = NSGraphicsContext.current else { return }
         let cgCtx = ctx.cgContext
 
-        // Same coordinate rationale as applyPixelate: makeImage() row 0 = visual
-        // top; CIImage origin is bottom-left, so CI y = H - y - h.
         guard let cgImage = cgCtx.makeImage() else { return }
         let ciImage = CIImage(cgImage: cgImage)
 
         let radius = item.blurRadius * max(canvasSize.width / 1000.0, 1)
 
-        let ciRect = CGRect(
-            x: rect.origin.x,
-            y: canvasSize.height - rect.origin.y - rect.height,
-            width: rect.width,
-            height: rect.height
-        )
+        let ciRect = CGRect(origin: rect.origin, size: rect.size)
 
         // 1. Expand crop region by the blur radius to avoid hard edges.
         let expandedRect = ciRect.insetBy(dx: -radius, dy: -radius)
@@ -248,17 +213,11 @@ enum AnnotationCompositor {
         // 4. Translate back to the original CI position.
         let positionedBlurred = finalBlurred.transformed(by: CGAffineTransform(translationX: ciRect.origin.x, y: ciRect.origin.y))
 
-        // 5. Render and draw back (see applyPixelate for flippedRect rationale).
+        // 5. Render and draw back.
         guard let resultCGImage = sharedCIContext.createCGImage(positionedBlurred, from: positionedBlurred.extent) else { return }
 
-        let flippedRect = NSRect(
-            x: rect.origin.x,
-            y: canvasSize.height - rect.maxY,
-            width: rect.width,
-            height: rect.height
-        )
         NSImage(cgImage: resultCGImage, size: rect.size).draw(
-            in: flippedRect,
+            in: rect,
             from: .zero,
             operation: .sourceOver,
             fraction: 1.0
@@ -352,14 +311,16 @@ enum AnnotationCompositor {
 
     // MARK: - Coordinate helpers
 
+    /// Converts normalized coordinates (y-down, 0 at top) to AppKit coordinates (y-up, 0 at bottom).
     private static func denorm(_ p: CGPoint, size: NSSize) -> NSPoint {
-        NSPoint(x: p.x * size.width, y: p.y * size.height)
+        NSPoint(x: p.x * size.width, y: (1.0 - p.y) * size.height)
     }
 
+    /// Converts normalized rect (y-down, 0 at top) to AppKit rect (y-up, 0 at bottom).
     private static func denormRect(_ r: CGRect, size: NSSize) -> NSRect {
         NSRect(
             x: r.origin.x * size.width,
-            y: r.origin.y * size.height,
+            y: (1.0 - r.maxY) * size.height,
             width: r.width * size.width,
             height: r.height * size.height
         )
