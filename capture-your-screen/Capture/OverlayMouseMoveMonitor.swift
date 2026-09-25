@@ -102,6 +102,10 @@ struct OverlayMouseMoveMonitor: NSViewRepresentable {
             lastEmittedPoint = nil
         }
 
+        deinit {
+            detach()
+        }
+
         func handleLocalMove(in view: NSView, event: NSEvent) {
             guard isEnabled else { return }
             let appKit = view.convert(event.locationInWindow, from: nil)
@@ -205,8 +209,12 @@ final class OverlayMouseMoveNSView: NSView {
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
-        window?.acceptsMouseMovedEvents = true
-        updateTrackingAreas()
-        coordinator?.emitCurrentPointerIfNeeded(force: true)
+        if window == nil {
+            coordinator?.detach()
+        } else {
+            window?.acceptsMouseMovedEvents = true
+            updateTrackingAreas()
+            coordinator?.emitCurrentPointerIfNeeded(force: true)
+        }
     }
 }

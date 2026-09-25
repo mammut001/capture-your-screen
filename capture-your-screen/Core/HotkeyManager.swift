@@ -294,6 +294,7 @@ final class HotkeyManager: ObservableObject {
             Self.callbackTarget = nil
         }
         unregister()
+        stopLocalMonitor()
         endCaptureKeyInterception()
         if let ref = handlerRef {
             RemoveEventHandler(ref)

@@ -8,7 +8,7 @@
 
 import SwiftUI
 
-struct ArrowShape: Shape {
+nonisolated struct ArrowShape: Shape {
     var start: CGPoint
     var end: CGPoint
     var headLength: CGFloat = 14

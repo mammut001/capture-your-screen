@@ -256,6 +256,10 @@ private struct KeyboardShortcutHandler: NSViewRepresentable {
         nsView.onSaveOriginal = onSaveOriginal
     }
 
+    static func dismantleNSView(_ nsView: KeyCaptureView, coordinator: ()) {
+        nsView.removeMonitor()
+    }
+
     final class KeyCaptureView: NSView {
         weak var canvas: AnnotationCanvas?
         var onCancel: (() -> Void)?
@@ -269,8 +273,12 @@ private struct KeyboardShortcutHandler: NSViewRepresentable {
 
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
-            window?.makeFirstResponder(self)
-            installMonitor()
+            if window != nil {
+                window?.makeFirstResponder(self)
+                installMonitor()
+            } else {
+                removeMonitor()
+            }
         }
 
         override func removeFromSuperview() {
@@ -293,7 +301,7 @@ private struct KeyboardShortcutHandler: NSViewRepresentable {
             }
         }
 
-        private func removeMonitor() {
+        fileprivate func removeMonitor() {
             if let m = monitor { NSEvent.removeMonitor(m); monitor = nil }
         }
 
