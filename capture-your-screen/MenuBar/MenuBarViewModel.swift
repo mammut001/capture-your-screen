@@ -35,7 +35,13 @@ final class MenuBarViewModel: ObservableObject {
     @Published var selectedForBatch: Set<String> = []
     @Published var isBatchMode: Bool = false
 
-    @AppStorage("pinnedScreenshotIDs") private var pinnedScreenshotIDsRaw: String = ""
+    /// @AppStorage inside an ObservableObject doesn't publish, so pin toggles
+    /// never re-rendered the list. Persist manually and publish instead.
+    private static let pinnedIDsKey = "pinnedScreenshotIDs"
+    @Published private(set) var pinnedIDs: Set<String> = Set(
+        (UserDefaults.standard.string(forKey: MenuBarViewModel.pinnedIDsKey) ?? "")
+            .split(separator: ",").map(String.init)
+    )
 
     @AppStorage("firstWeekdayPreference") var firstWeekdayPreference: Int = 1
     @AppStorage("saveFormatPreference") var saveFormatPreference: SaveFormat = .png
@@ -113,7 +119,6 @@ final class MenuBarViewModel: ObservableObject {
     // MARK: - Actions
 
     func startCapture() {
-        checkStorageReady()
         refreshPermissionStatus()
         captureCoordinator.startCapture()
     }
@@ -138,6 +143,13 @@ final class MenuBarViewModel: ObservableObject {
             return
         }
 
+        // Reveal the newest capture so Finder lands where the user just was.
+        if let latest = screenshotStore.screenshots.max(by: { $0.date < $1.date }),
+           FileManager.default.fileExists(atPath: latest.url.path) {
+            NSWorkspace.shared.activateFileViewerSelecting([latest.url])
+            return
+        }
+
         let folderFormatter = DateFormatter()
         folderFormatter.dateFormat = "yyyy-MM-dd"
         folderFormatter.locale = Locale(identifier: "en_US_POSIX")
@@ -154,17 +166,7 @@ final class MenuBarViewModel: ObservableObject {
             }
         }
 
-        let fileToSelect: URL
-        if let firstFile = FileManager.default.enumerator(
-            at: targetURL,
-            includingPropertiesForKeys: [.isRegularFileKey],
-            options: [.skipsHiddenFiles]
-        )?.nextObject() as? URL {
-            fileToSelect = firstFile
-        } else {
-            fileToSelect = targetURL
-        }
-        NSWorkspace.shared.activateFileViewerSelecting([fileToSelect])
+        NSWorkspace.shared.activateFileViewerSelecting([targetURL])
     }
 
     func copyScreenshot(_ item: ScreenshotHistoryItem) {
@@ -208,13 +210,26 @@ final class MenuBarViewModel: ObservableObject {
         NSWorkspace.shared.activateFileViewerSelecting([item.url])
     }
 
+    func openScreenshot(_ item: ScreenshotHistoryItem) {
+        guard FileManager.default.fileExists(atPath: item.url.path) else {
+            showError("File not found.")
+            return
+        }
+        NSWorkspace.shared.open(item.url)
+    }
+
     func deleteScreenshot(_ item: ScreenshotHistoryItem) {
         do {
             try screenshotStore.delete(id: item.id)
+            setPinned(item.id, false)
             // Membership publisher will rebuild sections once.
         } catch {
             showError(error.localizedDescription)
         }
+    }
+
+    var hasValidFolder: Bool {
+        screenshotStore.resolver.hasValidFolder
     }
 
     var screenshotFolderDisplay: String {
@@ -225,7 +240,7 @@ final class MenuBarViewModel: ObservableObject {
         return url.path.replacingOccurrences(of: NSHomeDirectory(), with: "~")
     }
 
-    func chooseScreenshotFolder() {
+    func chooseScreenshotFolder(startingAt startURL: URL? = nil) {
         let panel = NSOpenPanel()
         panel.canChooseFiles = false
         panel.canChooseDirectories = true
@@ -234,7 +249,9 @@ final class MenuBarViewModel: ObservableObject {
         panel.prompt = "Choose"
         panel.message = "Choose a folder to save screenshots.\nYou can point this to iCloud Drive or any other location."
 
-        if let oldPath = screenshotStore.resolver.oldPathString {
+        if let startURL {
+            panel.directoryURL = startURL
+        } else if let oldPath = screenshotStore.resolver.oldPathString {
             panel.directoryURL = URL(fileURLWithPath: oldPath)
         } else if let currentURL = screenshotStore.resolver.screenshotFolderURL {
             panel.directoryURL = currentURL
@@ -255,9 +272,17 @@ final class MenuBarViewModel: ObservableObject {
         }
     }
 
+    /// Opens the chooser at ~/Pictures/Screenshots (or ~/Pictures). The current bookmark is only
+    /// replaced if the user confirms, so cancelling keeps the existing folder.
     func resetToDefaultFolder() {
-        screenshotStore.resolver.clearBookmark()
-        chooseScreenshotFolder()
+        // Sandboxed `.picturesDirectory` points inside the app container, so
+        // resolve the real home directory instead.
+        let realHome = getpwuid(getuid()).flatMap { String(validatingUTF8: $0.pointee.pw_dir) }
+            ?? NSHomeDirectory()
+        let pictures = URL(fileURLWithPath: realHome).appendingPathComponent("Pictures", isDirectory: true)
+        let suggested = pictures.appendingPathComponent("Screenshots", isDirectory: true)
+        let start = FileManager.default.fileExists(atPath: suggested.path) ? suggested : pictures
+        chooseScreenshotFolder(startingAt: start)
     }
 
     func refresh() async {
@@ -378,13 +403,12 @@ final class MenuBarViewModel: ObservableObject {
         }
     }
 
+    /// Reuses the prebuilt day sections so SwiftUI re-renders don't re-stat files.
     var filteredHistoryItems: [ScreenshotHistoryItem] {
         guard let filterDate = appliedDateFilter else {
-            return screenshotStore.screenshots.map { $0.toHistoryItem() }
+            return historySections.flatMap(\.items)
         }
-        return screenshotStore.screenshots
-            .filter { calendar.isDate($0.date, inSameDayAs: filterDate) }
-            .map { $0.toHistoryItem() }
+        return historySections.first(where: { calendar.isDate($0.date, inSameDayAs: filterDate) })?.items ?? []
     }
 
     func filteredHistoryItems(matching query: String) -> [ScreenshotHistoryItem] {
@@ -398,12 +422,7 @@ final class MenuBarViewModel: ObservableObject {
     }
 
     var datesWithScreenshots: [Date: Int] {
-        var counts: [Date: Int] = [:]
-        for record in screenshotStore.screenshots {
-            let day = calendar.startOfDay(for: record.date)
-            counts[day, default: 0] += 1
-        }
-        return counts
+        Dictionary(uniqueKeysWithValues: historySections.map { ($0.date, $0.items.count) })
     }
 
     // MARK: - Internal
@@ -430,9 +449,17 @@ final class MenuBarViewModel: ObservableObject {
 
     func historyRows(matching query: String) -> [HistoryListRow] {
         guard !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            return historyRows
+            return pinnedRows + historyRows
         }
         return HistorySectionBuilder.filteredRows(from: historySections, matching: query)
+    }
+
+    /// Pinned captures surface above the day list (newest first).
+    private var pinnedRows: [HistoryListRow] {
+        guard !pinnedIDs.isEmpty else { return [] }
+        let pinned = historySections.flatMap(\.items).filter { pinnedIDs.contains($0.id) }
+        guard !pinned.isEmpty else { return [] }
+        return [.pinnedHeader(count: pinned.count)] + pinned.map { .pinnedItem($0) }
     }
 
     func updateHotkeyDisplay(_ display: String) {
@@ -492,12 +519,6 @@ final class MenuBarViewModel: ObservableObject {
             } else {
                 self.screenshotStore.resolver.clearOldPathData()
             }
-        }
-    }
-
-    private func checkStorageReady() {
-        if !screenshotStore.resolver.hasValidFolder {
-            showError("Please select a screenshot folder in Settings before capturing.")
         }
     }
 
@@ -571,6 +592,15 @@ final class MenuBarViewModel: ObservableObject {
         selectedForBatch.removeAll()
     }
 
+    func selectAllVisible(_ ids: [String]) {
+        selectedForBatch.formUnion(ids)
+    }
+
+    func exitBatchMode() {
+        isBatchMode = false
+        selectedForBatch.removeAll()
+    }
+
     func toggleSelection(_ id: String) {
         if selectedForBatch.contains(id) {
             selectedForBatch.remove(id)
@@ -587,6 +617,7 @@ final class MenuBarViewModel: ObservableObject {
         for id in ids {
             do {
                 try screenshotStore.delete(id: id)
+                setPinned(id, false)
             } catch {
                 showError(error.localizedDescription)
             }
@@ -594,18 +625,17 @@ final class MenuBarViewModel: ObservableObject {
     }
 
     func togglePin(_ id: String) {
-        var ids = Set(pinnedScreenshotIDsRaw.split(separator: ",").map(String.init))
-        if ids.contains(id) {
-            ids.remove(id)
-        } else {
-            ids.insert(id)
-        }
-        pinnedScreenshotIDsRaw = ids.joined(separator: ",")
+        setPinned(id, !pinnedIDs.contains(id))
     }
 
     func isPinned(_ id: String) -> Bool {
-        let ids = Set(pinnedScreenshotIDsRaw.split(separator: ",").map(String.init))
-        return ids.contains(id)
+        pinnedIDs.contains(id)
+    }
+
+    private func setPinned(_ id: String, _ pinned: Bool) {
+        guard pinnedIDs.contains(id) != pinned else { return }
+        if pinned { pinnedIDs.insert(id) } else { pinnedIDs.remove(id) }
+        UserDefaults.standard.set(pinnedIDs.sorted().joined(separator: ","), forKey: Self.pinnedIDsKey)
     }
 
     func exportHistoryToJSON() {

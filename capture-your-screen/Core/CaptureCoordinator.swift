@@ -114,6 +114,11 @@ final class CaptureCoordinator: ObservableObject {
 
         guard screenshotStore.resolver.hasValidFolder else {
             lastError = StorageError.folderNotSelected
+            // Hotkey captures have no visible panel to show lastError in.
+            notifier.postNotification(
+                title: "Choose a Screenshot Folder",
+                body: StorageError.folderNotSelected.localizedDescription
+            )
             return
         }
 

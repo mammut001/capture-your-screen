@@ -21,13 +21,17 @@ struct capture_your_screenApp: App {
     }
 
     var body: some Scene {
-        MenuBarExtra("Capture Your Screen", systemImage: "camera.viewfinder") {
+        MenuBarExtra {
             MenuBarView()
                 .environmentObject(appDelegate.viewModel)
                 .environmentObject(appDelegate.screenshotStore)
                 .environmentObject(appDelegate.hotkeyManager)
                 .environmentObject(appDelegate.launchAtLoginManager)
                 .environmentObject(appDelegate)
+        } label: {
+            // Icon only — a running count competes for scarce menu bar space.
+            Image(systemName: "camera.viewfinder")
+                .accessibilityLabel("Capture Your Screen")
         }
         .menuBarExtraStyle(.window)
     }
@@ -79,7 +83,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             await self?.screenshotStore.refreshHistory()
             self?.screenshotStore.startWatchingScreenshotFolder()
             self?.viewModel.refreshPermissionStatus()
-            self?.updateMenuBarBadge()
         }
 
         hotkeyActivity = ProcessInfo.processInfo.beginActivity(
@@ -95,15 +98,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         // Screen Recording TCC can change while System Settings is open; re-check on focus.
         Task { @MainActor [weak self] in
             self?.viewModel.refreshPermissionStatus()
-        }
-    }
-
-    /// Updates the menu bar icon badge with today's screenshot count.
-    func updateMenuBarBadge() {
-        let today = Calendar.current.startOfDay(for: Date())
-        let count = screenshotStore.screenshots.filter { Calendar.current.isDate($0.date, inSameDayAs: today) }.count
-        if let button = NSApp.windows.first?.value(forKey: "statusItem") as? NSStatusItem {
-            button.button?.title = count > 0 ? "\(count)" : ""
         }
     }
 
@@ -178,7 +172,10 @@ final class SettingsWindowController: NSWindowController {
          hotkeyManager: HotkeyManager,
          launchAtLoginManager: LaunchAtLoginManager) {
 
-        let settingsView = SettingsView()
+        // Settings is a plain NSWindow, not a sheet, so SwiftUI's `dismiss`
+        // is a no-op here — the Done button closes the window explicitly.
+        weak var weakWindow: NSWindow?
+        let settingsView = SettingsView(onClose: { weakWindow?.close() })
             .environmentObject(viewModel)
             .environmentObject(hotkeyManager)
             .environmentObject(launchAtLoginManager)
@@ -196,6 +193,7 @@ final class SettingsWindowController: NSWindowController {
             defer: false
         )
         window.title = "Settings"
+        weakWindow = window
         window.contentView = hostingView
         window.isReleasedWhenClosed = false
         // .floating puts it above all normal windows (including the annotation
