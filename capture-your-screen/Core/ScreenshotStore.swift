@@ -386,7 +386,9 @@ final class ScreenshotStore: ObservableObject {
         nextThumbs.removeValue(forKey: key)
         thumbnailsByID = nextThumbs
 
-        try FileManager.default.removeItem(at: record.url)
+        // Move to Trash rather than unlinking so a mis-click in the history
+        // list (context menu or batch delete) is recoverable from Finder.
+        try FileManager.default.trashItem(at: record.url, resultingItemURL: nil)
         screenshots.removeAll { thumbnailCacheKey(for: $0.url) == key }
     }
 

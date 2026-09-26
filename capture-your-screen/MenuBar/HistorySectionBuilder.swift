@@ -7,9 +7,16 @@ import AppKit
 enum HistoryListRow: Identifiable, Equatable {
     case dayHeader(date: Date, title: String, subtitle: String, count: Int)
     case item(ScreenshotHistoryItem)
+    /// "Pinned" group shown above the day sections; items also stay in their day.
+    case pinnedHeader(count: Int)
+    case pinnedItem(ScreenshotHistoryItem)
 
     var id: String {
         switch self {
+        case .pinnedHeader:
+            return "pinned-header"
+        case .pinnedItem(let item):
+            return "pinned-\(item.id)"
         case .dayHeader(let date, _, _, _):
             return "day-\(date.timeIntervalSinceReferenceDate)"
         case .item(let item):

@@ -8,6 +8,11 @@ struct MenuBarView: View {
     @Environment(\.dismiss) private var dismiss: DismissAction
     @State private var showingDatePicker: Bool = false
     @State private var searchText: String = ""
+    @FocusState private var isSearchFocused: Bool
+
+    init(showingDatePicker: Bool = false) {
+        _showingDatePicker = State(initialValue: showingDatePicker)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -31,6 +36,15 @@ struct MenuBarView: View {
             )
         )
         .task { await viewModel.refreshIfNeeded() }
+        // Selection mode shouldn't survive closing the panel.
+        .onDisappear { viewModel.exitBatchMode() }
+        .onExitCommand {
+            if showingDatePicker {
+                withAnimation(.spring(response: 0.24, dampingFraction: 0.85)) { showingDatePicker = false }
+            } else if viewModel.isBatchMode {
+                viewModel.exitBatchMode()
+            }
+        }
         .onAppear {
             hotkeyManager.ensureRegistered()
             viewModel.refreshPermissionStatus()
@@ -55,7 +69,7 @@ struct MenuBarView: View {
                         .background(Capsule().fill(Color.red.opacity(0.85)))
                         .transition(.opacity.combined(with: .move(edge: .bottom)))
                 }
-                if viewModel.isBatchMode && !viewModel.selectedForBatch.isEmpty {
+                if viewModel.isBatchMode {
                     batchDeleteBar
                         .transition(.move(edge: .bottom).combined(with: .opacity))
                 }
@@ -96,18 +110,24 @@ struct MenuBarView: View {
         HStack(spacing: 12) {
             Text("\(viewModel.selectedForBatch.count) selected")
                 .font(.caption.bold())
+            Button("Select All") {
+                viewModel.selectAllVisible(visibleItemIDs)
+            }
+            .buttonStyle(.borderless)
+            .controlSize(.small)
             Spacer()
             Button("Cancel") {
-                viewModel.toggleBatchMode()
+                viewModel.exitBatchMode()
             }
             .buttonStyle(.bordered)
             .controlSize(.small)
-            Button("Delete Selected") {
+            Button("Move to Trash") {
                 viewModel.batchDelete()
             }
             .buttonStyle(.borderedProminent)
             .controlSize(.small)
             .tint(.red)
+            .disabled(viewModel.selectedForBatch.isEmpty)
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
@@ -133,32 +153,9 @@ struct MenuBarView: View {
                 }
 
                 Spacer()
-
-                Button(action: toggleDatePicker) {
-                    HStack(spacing: 6) {
-                        Image(systemName: "calendar")
-                        Text(dateHeaderButtonTitle)
-                        Image(systemName: "chevron.down")
-                            .font(.system(size: 9, weight: .bold))
-                            .rotationEffect(.degrees(showingDatePicker ? 180 : 0))
-                    }
-                    .font(.caption.weight(.semibold))
-                    .foregroundColor(viewModel.browsingByDate || showingDatePicker ? .accentColor : .primary)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 8)
-                    .background(
-                        Capsule()
-                            .fill((viewModel.browsingByDate || showingDatePicker) ? Color.accentColor.opacity(0.12) : Color.secondary.opacity(0.10))
-                    )
-                }
-                .buttonStyle(.plain)
-                .help("Browse by date")
             }
 
-            Button(action: {
-                dismiss()
-                viewModel.startCapture()
-            }) {
+            Button(action: takeScreenshot) {
                 HStack(spacing: 12) {
                     Image(systemName: "plus.viewfinder")
                         .font(.title3.weight(.semibold))
@@ -195,7 +192,13 @@ struct MenuBarView: View {
                 )
             }
             .buttonStyle(.plain)
-            .keyboardShortcut(.space, modifiers: [])
+            // A bare-Space shortcut would swallow spaces typed into search.
+            .keyboardShortcut(isSearchFocused ? nil : KeyboardShortcut(.space, modifiers: []))
+
+            if !viewModel.hasValidFolder {
+                folderMissingBanner
+                    .transition(.move(edge: .top).combined(with: .opacity))
+            }
 
             if viewModel.permissionStatus == .denied {
                 permissionWarningBanner
@@ -212,6 +215,7 @@ struct MenuBarView: View {
                     .foregroundColor(.secondary)
                 TextField(viewModel.browsingByDate ? "Search this date's screenshots…" : "Search screenshots…", text: $searchText)
                     .textFieldStyle(.plain)
+                    .focused($isSearchFocused)
                 if !searchText.isEmpty {
                     Button(action: { searchText = "" }) {
                         Image(systemName: "xmark.circle.fill")
@@ -479,8 +483,10 @@ struct MenuBarView: View {
                                     subtitle: subtitle,
                                     count: count
                                 )
-                            case .item(let item):
+                            case .item(let item), .pinnedItem(let item):
                                 historyCard(item: item)
+                            case .pinnedHeader(let count):
+                                pinnedHeaderRow(count: count)
                             }
                         }
                     }
@@ -578,13 +584,6 @@ struct MenuBarView: View {
         count: Int
     ) -> some View {
         HStack(spacing: 12) {
-            Button(action: { viewModel.copyLatestScreenshot(on: date) }) {
-                Image(systemName: "doc.on.doc.fill")
-                    .foregroundColor(.accentColor)
-            }
-            .buttonStyle(.plain)
-            .help("Copy latest screenshot for this date")
-
             Button(action: {
                 withAnimation(.spring(response: 0.25, dampingFraction: 0.85)) {
                     viewModel.applyDate(date)
@@ -600,9 +599,17 @@ struct MenuBarView: View {
                 }
             }
             .buttonStyle(.plain)
-            .help("Filter to this day")
+            .help("Show only this day")
 
             Spacer()
+
+            Button(action: { viewModel.copyLatestScreenshot(on: date) }) {
+                Image(systemName: "doc.on.doc")
+                    .font(.system(size: 11))
+                    .foregroundColor(.secondary)
+            }
+            .buttonStyle(.plain)
+            .help("Copy latest screenshot for this date")
 
             Text("\(count)")
                 .font(.caption.bold().monospacedDigit())
@@ -625,6 +632,26 @@ struct MenuBarView: View {
         .padding(.top, 6)
     }
 
+    private func pinnedHeaderRow(count: Int) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: "pin.fill")
+                .font(.caption)
+                .foregroundColor(.accentColor)
+            Text("Pinned")
+                .font(.subheadline.bold())
+            Spacer()
+            Text("\(count)")
+                .font(.caption.bold().monospacedDigit())
+                .foregroundColor(.secondary)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(Color.secondary.opacity(0.12), in: Capsule())
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .padding(.top, 6)
+    }
+
     private func historyCard(item: ScreenshotHistoryItem) -> some View {
         let isSelected = viewModel.isBatchMode && viewModel.selectedForBatch.contains(item.id)
         let isPinned = viewModel.isPinned(item.id)
@@ -641,6 +668,7 @@ struct MenuBarView: View {
                     historyPreview(item)
                 }
                 .buttonStyle(.plain)
+                .help(viewModel.isBatchMode ? "Select" : "Click to copy to clipboard")
 
                 if isPinned {
                     Image(systemName: "pin.fill")
@@ -708,11 +736,12 @@ struct MenuBarView: View {
         .contextMenu {
             if !viewModel.isBatchMode {
                 Button("Copy") { viewModel.copyScreenshot(item) }
+                Button("Open") { viewModel.openScreenshot(item) }
                 Button("Show in Finder") { viewModel.showInFinder(item) }
                 Button(isPinned ? "Unpin" : "Pin") { viewModel.togglePin(item.id) }
                 Divider()
-                Button("Select for Batch Delete") { viewModel.toggleBatchMode(); viewModel.toggleSelection(item.id) }
-                Button("Delete", role: .destructive) { viewModel.deleteScreenshot(item) }
+                Button("Select Multiple…") { viewModel.toggleBatchMode(); viewModel.toggleSelection(item.id) }
+                Button("Move to Trash", role: .destructive) { viewModel.deleteScreenshot(item) }
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -722,7 +751,7 @@ struct MenuBarView: View {
     }
 
     private func historyPreview(_ item: ScreenshotHistoryItem) -> some View {
-        ZStack(alignment: .bottomLeading) {
+        ZStack {
             RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .fill(Color(nsColor: .controlBackgroundColor))
 
@@ -744,17 +773,6 @@ struct MenuBarView: View {
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-
-            HStack {
-                Text(item.displayTime)
-                    .font(.caption2.bold())
-                    .foregroundColor(.white)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background(Color.black.opacity(0.65), in: Capsule())
-                Spacer()
-            }
-            .padding(8)
         }
         // Fixed height keeps lazy list metrics stable while scrolling.
         .frame(maxWidth: .infinity)
@@ -764,6 +782,17 @@ struct MenuBarView: View {
             RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .stroke(Color.black.opacity(0.06), lineWidth: 1)
         )
+    }
+
+    /// IDs of cards currently listed (respecting date filter and search).
+    private var visibleItemIDs: [String] {
+        if viewModel.browsingByDate {
+            return viewModel.filteredHistoryItems(matching: searchText).map(\.id)
+        }
+        return viewModel.historyRows(matching: searchText).compactMap {
+            if case .item(let item) = $0 { return item.id }
+            return nil
+        }
     }
 
     private var historyIsEmpty: Bool {
@@ -791,20 +820,6 @@ struct MenuBarView: View {
         return formattedDate(date)
     }
 
-    private var dateHeaderButtonTitle: String {
-        if let filterDate = viewModel.appliedDateFilter {
-            let cal = Calendar.current
-            if cal.isDateInToday(filterDate) {
-                return "Today"
-            }
-            if cal.isDateInYesterday(filterDate) {
-                return "Yesterday"
-            }
-            return formattedDate(filterDate)
-        }
-        return "Calendar"
-    }
-
     private var headerSubtitle: String {
         if let filterDate = viewModel.appliedDateFilter {
             return "Browsing screenshots from \(dateBannerTitle(for: filterDate))"
@@ -816,6 +831,7 @@ struct MenuBarView: View {
         CompactCalendarView(
             visibleMonth: $viewModel.visibleMonth,
             selectedDate: $viewModel.selectedDate,
+            hasActiveSelection: viewModel.browsingByDate,
             datesWithScreenshots: viewModel.datesWithScreenshots,
             firstWeekdayPreference: viewModel.firstWeekdayPreference,
             onSelectDate: { date in
@@ -864,10 +880,14 @@ struct MenuBarView: View {
                 Label("Settings", systemImage: "gearshape")
             }
             .buttonStyle(.bordered)
+            .keyboardShortcut(",", modifiers: .command)
 
-            Button(action: { viewModel.toggleBatchMode() }) {
-                Label(viewModel.isBatchMode ? "Done" : "Batch", systemImage: viewModel.isBatchMode ? "checkmark" : "checkmark.circle")
+            Button(action: {
+                if viewModel.isBatchMode { viewModel.exitBatchMode() } else { viewModel.toggleBatchMode() }
+            }) {
+                Label(viewModel.isBatchMode ? "Done" : "Select", systemImage: viewModel.isBatchMode ? "checkmark" : "checkmark.circle")
             }
+            .help(viewModel.isBatchMode ? "Exit selection mode" : "Select multiple screenshots to move to Trash")
             .buttonStyle(.bordered)
             .tint(viewModel.isBatchMode ? .accentColor : nil)
 
@@ -878,6 +898,7 @@ struct MenuBarView: View {
             }
             .buttonStyle(.plain)
             .foregroundColor(.secondary)
+            .keyboardShortcut("q", modifiers: .command)
         }
         .padding(.horizontal, 4)
         .padding(.top, 6)
@@ -891,6 +912,52 @@ struct MenuBarView: View {
                     .stroke(Color(NSColor.separatorColor).opacity(0.4), lineWidth: 1)
             )
             .shadow(color: Color.black.opacity(0.05), radius: 12, y: 6)
+    }
+
+    private func takeScreenshot() {
+        // Without a folder the capture would fail silently after the panel
+        // closes — keep the panel open and ask for a folder instead.
+        guard viewModel.hasValidFolder else {
+            viewModel.chooseScreenshotFolder()
+            return
+        }
+        dismiss()
+        // Freeze-frame capture grabs the live display; give the panel's
+        // fade-out time to finish so it isn't baked into the screenshot.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+            viewModel.startCapture()
+        }
+    }
+
+    private var folderMissingBanner: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "folder.badge.questionmark")
+                .font(.system(size: 14))
+                .foregroundColor(.orange)
+
+            Text("Choose where screenshots are saved before capturing.")
+                .font(.caption)
+                .foregroundColor(.primary)
+
+            Spacer()
+
+            Button(action: { viewModel.chooseScreenshotFolder() }) {
+                Text("Choose Folder…")
+                    .font(.caption.bold())
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.small)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .background(
+            RoundedRectangle(cornerRadius: 12)
+                .fill(Color.orange.opacity(0.10))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12)
+                        .stroke(Color.orange.opacity(0.30), lineWidth: 1)
+                )
+        )
     }
 
     private func toggleDatePicker() {
@@ -925,9 +992,11 @@ private struct CalendarDayCell: Identifiable, Equatable {
     var id: TimeInterval { date.timeIntervalSinceReferenceDate }
 }
 
-private struct CompactCalendarView: View {
+struct CompactCalendarView: View {
     @Binding var visibleMonth: Date
     @Binding var selectedDate: Date
+    /// False while browsing "All": no day is filtered, so none should look selected.
+    var hasActiveSelection: Bool = true
     let datesWithScreenshots: [Date: Int]
     let firstWeekdayPreference: Int
     let onSelectDate: (Date) -> Void
@@ -999,7 +1068,7 @@ private struct CompactCalendarView: View {
             let normalizedDate = calendar.startOfDay(for: cellDate)
             let isCurrentMonth = calendar.isDate(normalizedDate, equalTo: visibleMonth, toGranularity: .month)
             let isToday = calendar.isDate(normalizedDate, inSameDayAs: today)
-            let isSelected = calendar.isDate(normalizedDate, inSameDayAs: startOfSelected)
+            let isSelected = hasActiveSelection && calendar.isDate(normalizedDate, inSameDayAs: startOfSelected)
             let isFuture = normalizedDate > today
             let count = datesWithScreenshots[normalizedDate] ?? 0
 
@@ -1072,16 +1141,6 @@ private struct CompactCalendarView: View {
                     dayCellView(cell: cell)
                 }
             }
-            .gesture(
-                DragGesture(minimumDistance: 30)
-                    .onEnded { value in
-                        if value.translation.width < -40 {
-                            showNextMonth()
-                        } else if value.translation.width > 40 {
-                            showPreviousMonth()
-                        }
-                    }
-            )
 
             Divider()
                 .padding(.vertical, 2)
@@ -1162,7 +1221,11 @@ private struct CompactCalendarView: View {
         .buttonStyle(.plain)
         .disabled(cell.isFuture)
         .onHover { hovering in
-            hoveredDate = hovering ? cell.date : nil
+            if hovering {
+                hoveredDate = cell.date
+            } else if hoveredDate == cell.date {
+                hoveredDate = nil
+            }
         }
         .help(cellTooltip(cell))
     }
@@ -1225,8 +1288,8 @@ struct SettingsView: View {
     @EnvironmentObject var viewModel: MenuBarViewModel
     @EnvironmentObject var hotkeyManager: HotkeyManager
     @EnvironmentObject var launchAtLoginManager: LaunchAtLoginManager
-    @Environment(\.dismiss) private var dismiss
     @State private var showHotkeySettings: Bool = false
+    var onClose: () -> Void = {}
 
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
@@ -1298,7 +1361,7 @@ struct SettingsView: View {
                             .font(.caption2)
                             .foregroundColor(.secondary)
                         Spacer()
-                        Button("Choose Default Folder\u{2026}") {
+                        Button("Use Suggested Folder\u{2026}") {
                             viewModel.resetToDefaultFolder()
                         }
                         .font(.caption2)
@@ -1359,21 +1422,21 @@ struct SettingsView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
 
-            Spacer()
-
             HStack {
                 Text("Tip: You can point save location to iCloud Drive or any other folder.")
                     .font(.caption2)
                     .foregroundColor(.secondary)
                     .italic()
                 Spacer()
-                Button("Done") { dismiss() }
+                Button("Done") { onClose() }
                     .buttonStyle(.borderedProminent)
                     .controlSize(.regular)
                     .keyboardShortcut(.defaultAction)
             }
         }
         .padding(24)
-        .frame(width: 520, height: 420)
+        // Let height follow content; a fixed 420pt clipped the six groups.
+        .frame(width: 520)
+        .fixedSize(horizontal: false, vertical: true)
     }
 }
