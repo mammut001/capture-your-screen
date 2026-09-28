@@ -1,123 +1,105 @@
+<div align="center">
+
+<img src="capture-your-screen/Assets.xcassets/AppIcon.appiconset/icon_256x256@2x.png" width="112" alt="Capture Your Screen icon">
+
 # Capture Your Screen
 
-**A native macOS screenshot and annotation app built on ScreenCaptureKit — plus a small read-only CLI for automation agents.**
+**A native macOS screenshot app that freezes the screen before you select, so menus and tooltips come out exactly as you saw them. Every capture is kept in a searchable, day-by-day history.**
 
-Capture Your Screen is a Swift macOS project with two complementary surfaces: a menu bar screenshot app for people, and `capture-screen-helper` for tools that need a safe, machine-readable desktop observation step.
+[![Download](https://img.shields.io/github/v/release/mammut001/capture-your-screen?label=Download&style=for-the-badge&color=2f80ed)](https://github.com/mammut001/capture-your-screen/releases/latest)
 
-## What makes it interesting
+![macOS 14+](https://img.shields.io/badge/macOS-14%2B-black?logo=apple)
+![Universal](https://img.shields.io/badge/Apple%20Silicon%20%2B%20Intel-universal-555)
+![Notarized](https://img.shields.io/badge/notarized-by%20Apple-2ea44f)
+![No network](https://img.shields.io/badge/network%20access-none-2ea44f)
+[![License: GPL v3](https://img.shields.io/badge/license-GPLv3-blue)](LICENSE)
 
-This is not just a wrapper around `screencapture`. The project keeps the desktop capture pipeline, annotation UI, and automation boundary separate so the same native capture stack can serve both interactive use and agent workflows.
+</div>
 
-- **Native ScreenCaptureKit pipeline** for macOS capture
-- **Freeze-frame capture** so menu bar popovers, context menus, and tooltips survive the confirm click
-- **Click-free window targeting** on the selection overlay (move to snap, click to lock)
-- **Menu bar app** with post-capture annotation flow
-- **Configurable PNG/JPEG saving** with format-aware history and clipboard copying
-- **Structured annotation system** with canvas, compositor, renderer, selection handles, arrows, and numbered callouts
-- **Read-only CLI helper** that writes PNG output and returns safe JSON metadata
-- **Permission-aware behavior** for macOS Screen Recording access
-- **Automation integration** designed for projects such as [Conveyor](https://github.com/mammut001/Conveyor)
+<!--
+  HERO MEDIA — record a 10–15s GIF/MP4 and save it as docs/media/hero.gif, then
+  replace this comment with:
+  <p align="center"><img src="docs/media/hero.gif" width="720" alt="Capturing a menu with Capture Your Screen"></p>
+  Suggested shot: open an app menu → press ⌘⇧A → hover to snap to a window →
+  Enter → Annotate → arrow + blur → Copy.
+-->
 
-## Architecture
+---
 
-```text
-                     ┌──────────────────────┐
-                     │  ScreenCaptureKit    │
-                     │   capture pipeline   │
-                     └──────────┬───────────┘
-                                │
-                 ┌──────────────┴──────────────┐
-                 │                             │
-                 ▼                             ▼
-      ┌────────────────────┐       ┌──────────────────────┐
-      │ macOS menu bar app │       │ capture-screen-helper│
-      │ capture + annotate │       │ read-only CLI        │
-      └─────────┬──────────┘       └──────────┬───────────┘
-                │                             │
-                ▼                             ▼
-      Annotation editor              PNG + safe JSON
-      renderer/compositor            metadata to stdout
-```
+## Why another screenshot app?
 
-## Annotation pipeline
+**📸 It captures exactly what you see.**
+Press the hotkey and the screen freezes instantly. Open menus, right-click menus, hover states and tooltips all stay put while you pick the area, so they don't vanish the moment you click.
 
-The app keeps annotation behavior in a dedicated module rather than mixing drawing state into the capture layer. The repository includes separate canvas, editor, compositor, renderer, toolbar, and shape components, making the post-capture path easier to evolve and test.
+**🪟 It snaps to windows without clicking.**
+Move the pointer over any window and the selection snaps to it. Press Enter to capture, or drag to select a custom area.
 
-## `capture-screen-helper`
+**🗓️ It remembers every screenshot.**
+Every capture goes into a history in the menu bar, grouped by day. Jump to any date on the calendar, step through the days you took screenshots, search, pin the ones you need, and copy any shot back to the clipboard with one click. Files are saved into dated folders you choose, and that folder can be in iCloud Drive.
 
-`capture-screen-helper` reuses the app's ScreenCaptureKit path for a deliberately narrow automation use case.
+**🔒 It's private by design.**
+The app runs in the macOS sandbox with **no network entitlement**. It has no accounts, no uploads and no analytics, and it cannot connect to the internet at all.
 
-### What it does
+## Features
 
-- Captures the **full main display** to a PNG path you provide
-- Prints **safe JSON metadata** to stdout, including path, SHA-256, dimensions, display id, and timestamp
-- Checks **Screen Recording** permission without capturing when `--check-permission` is used
+- **Freeze-frame capture** built on ScreenCaptureKit
+- **Hover-to-snap window selection** or free-form area selection
+- **Post-capture panel**: Copy, Annotate, Share, or discard
+- **Annotation editor**: arrows, text, rectangles, ellipses, numbered steps, pixelate and blur
+- **Text recognition (OCR)** in the annotation editor, powered by the Vision framework on your Mac
+- **Menu bar history** grouped by day, with a calendar, Today / Yesterday filters, search and pinning
+- **Safe delete**: deleted screenshots go to the Trash, so they can be recovered
+- **PNG or JPEG**, a custom save folder, a customizable global hotkey, and launch at login
+- **Universal build** for Apple Silicon and Intel, signed and notarized by Apple
 
-### What it deliberately does not do
+## Keyboard shortcuts
 
-- No mouse or keyboard input
-- No browser or app control
-- No uploads
-- No clipboard writes
-- No file deletion
-- No base64 screenshot payloads
+| Action | Keys |
+|---|---|
+| Start a capture (customizable) | <kbd>⌘</kbd> <kbd>⇧</kbd> <kbd>A</kbd> |
+| Confirm the selection and open the action panel | <kbd>Return</kbd> |
+| Skip the panel: copy **and** save right away | <kbd>⌘</kbd> <kbd>Return</kbd> |
+| Cancel | <kbd>Esc</kbd> |
+| In the action panel: Copy · Annotate · Share | <kbd>⌘</kbd> <kbd>C</kbd> · <kbd>⌘</kbd> <kbd>E</kbd> · <kbd>⇧</kbd> <kbd>⌘</kbd> <kbd>S</kbd> |
+| In the menu bar panel: take a screenshot · Settings · Quit | <kbd>Space</kbd> · <kbd>⌘</kbd> <kbd>,</kbd> · <kbd>⌘</kbd> <kbd>Q</kbd> |
 
-That boundary is intentional: the helper is an observation primitive, not a general-purpose computer-control process.
+## Install
 
-## Build the app
+1. Download `capture-your-screen-<version>-macos.zip` from the [latest release](https://github.com/mammut001/capture-your-screen/releases/latest).
+2. Unzip it and drag **capture-your-screen.app** into **Applications**.
+3. Open it. A camera icon appears in the menu bar.
+4. On the first capture, macOS asks for **Screen Recording** permission. Enable it in **System Settings → Privacy & Security → Screen Recording**, then quit and reopen the app.
+5. Choose where screenshots are saved when prompted. `~/Pictures/Screenshots` or an iCloud Drive folder both work well.
 
-Open the Xcode project:
+> **Upgrading from 1.2.x or earlier?** Starting with 1.3.0 the app is signed with a Developer ID, so macOS asks for Screen Recording permission once more after you upgrade.
 
-```bash
-open capture-your-screen.xcodeproj
-```
+**Requirements:** macOS 14 Sonoma or later.
 
-## Build the helper
+## Roadmap
 
-```bash
-xcodebuild \
-  -project capture-your-screen.xcodeproj \
-  -scheme capture-screen-helper \
-  -configuration Release \
-  build
-```
+- [ ] One-shot **Capture Text**: select an area and copy its text, with no image saved
+- [ ] **Search history by the text inside screenshots**, for example to find "that error message from last week"
+- [ ] Drag screenshots straight from the history into other apps
+- [ ] Pin a screenshot to float above your windows
 
-Or use the helper script, which also runs argument-parser self-tests:
+Ideas and bug reports are welcome in [Issues](https://github.com/mammut001/capture-your-screen/issues).
 
-```bash
-bash scripts/build_helper.sh
-```
+---
 
-Install the built binary wherever your automation stack expects it, for example:
+## For developers and automation: `capture-screen-helper`
 
-```bash
-# After scripts/build_helper.sh:
-cp build/Release/capture-screen-helper /usr/local/bin/
-```
-
-## CLI usage
-
-Check Screen Recording permission:
+The repo also ships a small, **read-only** command-line tool that reuses the app's ScreenCaptureKit pipeline. It lets scripts and AI agents (such as [Conveyor](https://github.com/mammut001/Conveyor)) take a screenshot safely.
 
 ```bash
 capture-screen-helper --check-permission --json
+
+capture-screen-helper --mode full-display --display main \
+  --output /absolute/path/screenshot.png --json
 ```
 
-Capture once:
+It captures the main display to a PNG and prints JSON metadata to stdout (path, SHA-256, dimensions, display ID, timestamp). It deliberately does **not** move the mouse, type, control apps, upload, touch the clipboard, delete files or emit base64 image data. It is an observation primitive, not a computer-control tool.
 
-```bash
-capture-screen-helper \
-  --mode full-display \
-  --display main \
-  --output /absolute/path/screenshot.png \
-  --json
-```
-
-Supported flags in this release are `--mode full-display`, `--display main`, `--output`, `--json`, and `--check-permission`. Unsupported arguments return a non-zero exit with safe JSON.
-
-## Screen Recording permission
-
-macOS requires **Screen Recording** permission. When it is missing, the helper returns a structured error such as:
+If Screen Recording permission is missing, it returns a structured error instead of failing silently:
 
 ```json
 {
@@ -128,14 +110,20 @@ macOS requires **Screen Recording** permission. When it is missing, the helper r
 }
 ```
 
-Grant permission to `capture-screen-helper` — or to the terminal app launching it — in **System Settings → Privacy & Security → Screen Recording**.
+A notarized universal binary is attached to each [release](https://github.com/mammut001/capture-your-screen/releases/latest). Supported flags: `--mode full-display`, `--display main`, `--output`, `--json` and `--check-permission`. Unsupported arguments exit non-zero with safe JSON.
 
-## Manual helper smoke test
+## Build from source
 
-1. Build the helper.
-2. Run `--check-permission --json` before granting access and confirm permission is denied.
-3. Enable Screen Recording in System Settings.
-4. Capture to an absolute path under `/tmp` and confirm a PNG is produced.
-5. Confirm relative output paths and pre-existing output files are rejected.
+```bash
+git clone https://github.com/mammut001/capture-your-screen.git
+cd capture-your-screen
+open capture-your-screen.xcodeproj   # run the "capture-your-screen" scheme
 
-Automated real-screen capture is intentionally not assumed in headless CI because macOS Screen Recording consent is interactive.
+bash scripts/build_helper.sh         # builds and self-tests the CLI helper
+```
+
+The code is organized into `Capture/` (freeze-frame overlay and window snapping), `Annotation/` (editor, renderer, compositor), `MenuBar/` (history panel and settings) and `capture-screen-helper/` (the CLI tool). Real screen capture isn't exercised in headless CI, because macOS Screen Recording consent is interactive.
+
+## License
+
+Capture Your Screen is free software, released under the [GNU General Public License v3.0](LICENSE). You're free to use, study, modify and share it. If you distribute a modified version, it must stay under the GPL, with its source code available.
