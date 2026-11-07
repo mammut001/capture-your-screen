@@ -169,6 +169,29 @@ final class AnnotationCanvas: ObservableObject {
         return maxStep + 1
     }
 
+    /// Creates a drawing using the current toolbar settings. Keep creation in
+    /// the model so all tools use the same defaults as their visible controls.
+    func makeItem(from start: CGPoint, to end: CGPoint) -> AnnotationItem {
+        var item = AnnotationItem(type: activeTool)
+        item.colorHex = activeColorHex
+        item.lineWidth = activeLineWidth
+        item.fontSize = activeFontSize
+        item.pixelSize = activePixelSize
+        item.blurRadius = activeBlurRadius
+        item.startPoint = start
+        item.endPoint = end
+        switch activeTool {
+        case .stepNumber:
+            item.stepNumber = nextStepNumber
+            item.endPoint = start
+        case .text:
+            item.endPoint = start
+        default:
+            break
+        }
+        return item
+    }
+
     func addItem(_ item: AnnotationItem) {
         snapshot()
         items.append(item)

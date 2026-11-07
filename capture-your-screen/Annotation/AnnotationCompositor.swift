@@ -189,35 +189,23 @@ enum AnnotationCompositor {
 
         let radius = item.blurRadius * max(canvasSize.width / 1000.0, 1)
 
-        let ciRect = CGRect(origin: rect.origin, size: rect.size)
+        let ciRect = rect.intersection(ciImage.extent)
+        guard !ciRect.isNull, !ciRect.isEmpty else { return }
 
-        // 1. Expand crop region by the blur radius to avoid hard edges.
-        let expandedRect = ciRect.insetBy(dx: -radius, dy: -radius)
-        let cropped = ciImage.cropped(to: expandedRect)
-
-        // 2. Apply Gaussian blur.
+        // CI crops retain their original coordinates. Keep the blur and the
+        // requested output in the screenshot's coordinate space; cropping at
+        // (radius, radius) instead would sample an unrelated or empty region.
+        // Clamp the image edges so selections touching the screenshot boundary
+        // do not blend transparent pixels into the blurred result.
         let blurFilter = CIFilter.gaussianBlur()
-        blurFilter.inputImage = cropped
+        blurFilter.inputImage = ciImage.clampedToExtent()
         blurFilter.radius = Float(radius)
 
         guard let blurred = blurFilter.outputImage else { return }
+        guard let resultCGImage = sharedCIContext.createCGImage(blurred, from: ciRect) else { return }
 
-        // 3. Crop back to the target size (removes blur bleed).
-        let finalBlurred = blurred.cropped(to: CGRect(
-            x: radius,
-            y: radius,
-            width: ciRect.width,
-            height: ciRect.height
-        ))
-
-        // 4. Translate back to the original CI position.
-        let positionedBlurred = finalBlurred.transformed(by: CGAffineTransform(translationX: ciRect.origin.x, y: ciRect.origin.y))
-
-        // 5. Render and draw back.
-        guard let resultCGImage = sharedCIContext.createCGImage(positionedBlurred, from: positionedBlurred.extent) else { return }
-
-        NSImage(cgImage: resultCGImage, size: rect.size).draw(
-            in: rect,
+        NSImage(cgImage: resultCGImage, size: ciRect.size).draw(
+            in: ciRect,
             from: .zero,
             operation: .sourceOver,
             fraction: 1.0

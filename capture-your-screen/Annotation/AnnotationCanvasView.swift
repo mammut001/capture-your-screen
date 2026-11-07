@@ -217,22 +217,7 @@ struct AnnotationCanvasView: View {
     // MARK: - Create
 
     private func createNewItem(at start: CGPoint, curNorm: CGPoint) {
-        var item = AnnotationItem(type: canvas.activeTool)
-        item.colorHex = canvas.activeColorHex
-        item.lineWidth = canvas.activeLineWidth
-        item.fontSize = canvas.activeFontSize
-        item.startPoint = start
-        item.endPoint = curNorm
-        switch canvas.activeTool {
-        case .stepNumber:
-            item.stepNumber = canvas.nextStepNumber
-            item.endPoint = start
-        case .text:
-            item.textContent = ""
-            item.endPoint = start
-        default:
-            break
-        }
+        let item = canvas.makeItem(from: start, to: curNorm)
         canvas.addItem(item)
         dragMode = .creating(id: item.id)
     }

@@ -46,6 +46,10 @@ final class ScreenshotFormatTests: XCTestCase {
         try Data([0x00]).write(
             to: dayFolder.appendingPathComponent("Screenshot_2026-08-04_09-00-00_004.gif")
         )
+        try FileManager.default.createDirectory(
+            at: dayFolder.appendingPathComponent("Screenshot_2026-08-04_09-00-00_005.png"),
+            withIntermediateDirectories: true
+        )
 
         await store.refreshHistory()
 

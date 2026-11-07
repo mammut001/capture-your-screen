@@ -52,6 +52,7 @@ private final class SpyPanelPresenter: PostCapturePanelPresenting {
     var dismissCount = 0
     var statuses: [PostCapturePanelStatus] = []
     var handlers: PostCaptureActionHandlers?
+    var lastSession: PostCaptureSession?
     private(set) var presenting = false
 
     var isPresenting: Bool { presenting }
@@ -61,6 +62,7 @@ private final class SpyPanelPresenter: PostCapturePanelPresenting {
         presentCount += 1
         presenting = true
         self.handlers = handlers
+        lastSession = session
     }
 
     func showStatus(_ status: PostCapturePanelStatus) {
@@ -273,6 +275,7 @@ final class PostCaptureWorkflowTests: XCTestCase {
         XCTAssertEqual(clipboard.writeCount, 1, "clipboard succeeded")
         XCTAssertEqual(persistence.saveCount, 0)
         XCTAssertEqual(coordinator.state, .reviewing, "session stays recoverable")
+        XCTAssertNotNil(coordinator.lastError)
         guard case .failure(let message) = panel.statuses.last else {
             return XCTFail("expected failure status")
         }
@@ -283,6 +286,7 @@ final class PostCaptureWorkflowTests: XCTestCase {
         coordinator.handleCopy(sessionID: id)
         await awaitAction()
         XCTAssertEqual(persistence.saveCount, 1)
+        XCTAssertNil(coordinator.lastError, "successful retry must clear the previous failure")
         assertCleanIdle()
     }
 
@@ -317,6 +321,83 @@ final class PostCaptureWorkflowTests: XCTestCase {
         XCTAssertEqual(clipboard.writeCount, 1)
         XCTAssertIdentical(clipboard.lastImage, annotated, "the annotated image must be copied")
         XCTAssertEqual(notifier.notifications.count, 1, "exactly one success notification")
+        assertCleanIdle()
+    }
+
+    func testAnnotationSave_diskFailurePreservesEditedPreviewAndCopyRetry() async {
+        let original = makeImage()
+        let id = beginReview(image: original)
+        coordinator.handleAnnotate(sessionID: id)
+        let annotated = makeImage(width: 99, height: 77)
+        persistence.errorToThrow = DummyError()
+
+        coordinator.handleAnnotationSave(sessionID: id, annotatedImage: annotated)
+        await awaitAction()
+
+        XCTAssertEqual(coordinator.state, .reviewing)
+        XCTAssertEqual(coordinator.activeSession?.id, id)
+        XCTAssertIdentical(coordinator.activeSession?.originalImage, original)
+        XCTAssertIdentical(panel.lastSession?.image, annotated, "recovery preview must show the edited result")
+        XCTAssertEqual(panel.lastSession?.pixelSize, annotated.size)
+        XCTAssertFalse(annotation.presenting)
+        XCTAssertEqual(persistence.saveCount, 0)
+
+        persistence.errorToThrow = nil
+        coordinator.handleCopy(sessionID: id)
+        await awaitAction()
+
+        XCTAssertIdentical(clipboard.lastImage, annotated)
+        XCTAssertIdentical(persistence.lastImage, annotated, "retry must not save the original screenshot")
+        XCTAssertEqual(persistence.saveCount, 1)
+        XCTAssertNil(coordinator.lastError)
+        assertCleanIdle()
+    }
+
+    func testAnnotationSave_clipboardFailurePreservesEditedImageForShare() async {
+        let id = beginReview()
+        coordinator.handleAnnotate(sessionID: id)
+        let annotated = makeImage(width: 99, height: 77)
+        clipboard.errorToThrow = DummyError()
+
+        coordinator.handleAnnotationSave(sessionID: id, annotatedImage: annotated)
+        await awaitAction()
+
+        XCTAssertEqual(coordinator.state, .reviewing)
+        XCTAssertIdentical(panel.lastSession?.image, annotated)
+        XCTAssertEqual(persistence.attemptCount, 0)
+
+        coordinator.handleShare(sessionID: id)
+        await awaitAction()
+
+        XCTAssertIdentical(sharing.lastImage, annotated, "share must use the retained annotations")
+        XCTAssertIdentical(persistence.lastImage, annotated)
+        XCTAssertEqual(persistence.saveCount, 1)
+        XCTAssertNil(coordinator.lastError)
+        assertCleanIdle()
+    }
+
+    func testAnnotationSave_failureThenReopenAndCancelKeepsCommittedEdits() async {
+        let id = beginReview()
+        coordinator.handleAnnotate(sessionID: id)
+        let annotated = makeImage(width: 99, height: 77)
+        persistence.errorToThrow = DummyError()
+
+        coordinator.handleAnnotationSave(sessionID: id, annotatedImage: annotated)
+        await awaitAction()
+
+        coordinator.handleAnnotate(sessionID: id)
+        XCTAssertIdentical(annotation.lastImage, annotated, "reopened editor must keep the previous result")
+        coordinator.handleAnnotationCancel(sessionID: id)
+        XCTAssertIdentical(panel.lastSession?.image, annotated)
+
+        // Skipping a subsequent edit discards only that edit, not the committed
+        // annotations still waiting to be saved from the earlier attempt.
+        persistence.errorToThrow = nil
+        coordinator.handleAnnotate(sessionID: id)
+        coordinator.handleAnnotationSkip(sessionID: id)
+        await awaitAction()
+
+        XCTAssertIdentical(persistence.lastImage, annotated)
         assertCleanIdle()
     }
 

@@ -56,7 +56,7 @@ final class PostCaptureActionPanelController: NSObject, PostCapturePanelPresenti
 
         let model = PostCapturePanelModel()
         let view = PostCaptureActionView(
-            image: session.originalImage,
+            image: session.image,
             pixelSize: session.pixelSize,
             model: model,
             handlers: handlers
@@ -81,23 +81,20 @@ final class PostCaptureActionPanelController: NSObject, PostCapturePanelPresenti
 
     func dismiss() {
         guard let panel = window else { return }
-        let controller = self
+        // Release ownership immediately: the old window can still receive a
+        // native close event while fading, or a new panel can replace it.
+        window = nil
+        model = nil
+        systemCloseHandler = nil
+        panel.delegate = nil
+        panel.ignoresMouseEvents = true
         NSAnimationContext.runAnimationGroup { context in
             context.duration = 0.15
             context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
             panel.animator().alphaValue = 0.0
         } completionHandler: {
-            Task { @MainActor [controller] in
-                panel.delegate = nil
+            Task { @MainActor in
                 panel.close()
-
-                // A newer panel may already have replaced this one while the
-                // fade-out animation was running. Only clear state owned by
-                // the panel that actually finished closing.
-                guard controller.window === panel else { return }
-                controller.window = nil
-                controller.model = nil
-                controller.systemCloseHandler = nil
             }
         }
     }
@@ -107,7 +104,8 @@ final class PostCaptureActionPanelController: NSObject, PostCapturePanelPresenti
     /// The user clicked the native close button (or pressed ⌘W):
     /// treat it exactly like Cancel.
     func windowWillClose(_ notification: Notification) {
-        guard window != nil else { return }
+        guard let closingWindow = notification.object as? NSWindow,
+              closingWindow === window else { return }
         let handler = systemCloseHandler
         window = nil
         model = nil

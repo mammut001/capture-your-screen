@@ -110,4 +110,62 @@ final class AnnotationCompositorTests: XCTestCase {
         XCTAssertGreaterThan(bottomBoxColor?.redComponent ?? 0, 0.7, "Bottom box stroke should have red")
         XCTAssertGreaterThan(bottomBoxColor?.blueComponent ?? 0, 0.7, "Bottom box stroke should have blue")
     }
+
+    func testComposite_blursOffsetSelectionWithoutChangingSurroundingPixels() throws {
+        let base = makeStripedImage()
+        var blur = AnnotationItem(type: .blur)
+        blur.startPoint = CGPoint(x: 0.6, y: 0.2)
+        blur.endPoint = CGPoint(x: 0.9, y: 0.6)
+        blur.blurRadius = 10
+
+        let output = try bitmap(of: AnnotationCompositor.composite(baseImage: base, annotations: [blur]))
+
+        // These adjacent black/blue stripes are well inside an off-origin
+        // selection. A real blur mixes them; sampling transparent pixels from
+        // the wrong CI coordinates would leave the original stripes untouched.
+        let darkStripe = try XCTUnwrap(output.colorAt(x: 218, y: 70))
+        let blueStripe = try XCTUnwrap(output.colorAt(x: 222, y: 70))
+        XCTAssertGreaterThan(darkStripe.blueComponent, 0.1)
+        XCTAssertLessThan(blueStripe.blueComponent, 0.95)
+        XCTAssertLessThan(darkStripe.redComponent, 0.05)
+        XCTAssertLessThan(darkStripe.greenComponent, 0.05)
+
+        XCTAssertLessThan(try XCTUnwrap(output.colorAt(x: 98, y: 70)).blueComponent, 0.05)
+        XCTAssertGreaterThan(try XCTUnwrap(output.colorAt(x: 102, y: 70)).blueComponent, 0.95)
+        XCTAssertLessThan(try XCTUnwrap(output.colorAt(x: 218, y: 10)).blueComponent, 0.05)
+    }
+
+    func testComposite_blurAtImageEdgeChangesTextureAndKeepsOpaquePixels() throws {
+        var blur = AnnotationItem(type: .blur)
+        blur.startPoint = .zero
+        blur.endPoint = CGPoint(x: 0.2, y: 0.3)
+        blur.blurRadius = 10
+
+        let output = try bitmap(of: AnnotationCompositor.composite(
+            baseImage: makeStripedImage(), annotations: [blur]
+        ))
+        let edgePixel = try XCTUnwrap(output.colorAt(x: 2, y: 2))
+        XCTAssertGreaterThan(edgePixel.blueComponent, 0.1)
+        XCTAssertLessThan(edgePixel.blueComponent, 0.95)
+        XCTAssertEqual(edgePixel.alphaComponent, 1, accuracy: 0.01)
+    }
+
+    private func makeStripedImage() -> NSImage {
+        let context = CGContext(
+            data: nil, width: 300, height: 200, bitsPerComponent: 8,
+            bytesPerRow: 300 * 4, space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        )!
+        context.setFillColor(NSColor.blue.cgColor)
+        context.fill(CGRect(x: 0, y: 0, width: 300, height: 200))
+        context.setFillColor(NSColor.black.cgColor)
+        for x in stride(from: 0, to: 300, by: 8) {
+            context.fill(CGRect(x: x, y: 0, width: 4, height: 200))
+        }
+        return NSImage(cgImage: context.makeImage()!, size: NSSize(width: 300, height: 200))
+    }
+
+    private func bitmap(of image: NSImage) throws -> NSBitmapImageRep {
+        try XCTUnwrap(NSBitmapImageRep(data: XCTUnwrap(image.tiffRepresentation)))
+    }
 }

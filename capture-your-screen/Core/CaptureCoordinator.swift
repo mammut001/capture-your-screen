@@ -275,6 +275,7 @@ final class CaptureCoordinator: ObservableObject {
             selectionRect: selectionRect
         )
         activeSession = session
+        lastError = nil
         isProcessingAction = false
         state = .reviewing
         presentPanel(for: session)
@@ -305,7 +306,7 @@ final class CaptureCoordinator: ObservableObject {
         actionTask = Task { [weak self] in
             await self?.completeSession(
                 id: sessionID,
-                image: session.originalImage,
+                image: session.image,
                 copyToClipboard: true,
                 feedback: .panelStatus(PostCaptureStrings.copiedAndSaved)
             )
@@ -360,7 +361,7 @@ final class CaptureCoordinator: ObservableObject {
     private func presentAnnotationEditor(for session: PostCaptureSession) {
         let id = session.id
         annotationPresenter.present(
-            image: session.originalImage,
+            image: session.image,
             handlers: AnnotationEditorHandlers(
                 onSave: { [weak self] annotated in
                     self?.handleAnnotationSave(sessionID: id, annotatedImage: annotated)
@@ -378,7 +379,9 @@ final class CaptureCoordinator: ObservableObject {
     func handleAnnotationSave(sessionID: UUID, annotatedImage: NSImage) {
         guard let session = activeSession, session.id == sessionID,
               state == .annotating, !isProcessingAction else { return }
-        _ = session
+        // Retain the rendered result before closing the editor. Both clipboard
+        // and disk writes can fail; recovery must keep the user's annotations.
+        activeSession?.retainAnnotatedImage(annotatedImage)
         isProcessingAction = true
         state = .saving
         annotationPresenter.dismiss()
@@ -403,15 +406,15 @@ final class CaptureCoordinator: ObservableObject {
         actionTask = Task { [weak self] in
             await self?.completeSession(
                 id: sessionID,
-                image: session.originalImage,
+                image: session.image,
                 copyToClipboard: true,
                 feedback: .notification(title: PostCaptureStrings.savedNotificationTitle)
             )
         }
     }
 
-    /// Cancelling annotation returns to the action panel with the original
-    /// image; the screenshot is NOT discarded.
+    /// Cancelling annotation returns to the action panel with the image that
+    /// opened the editor, including any previously committed annotations.
     func handleAnnotationCancel(sessionID: UUID) {
         guard let session = activeSession, session.id == sessionID,
               state == .annotating, !isProcessingAction else { return }
@@ -426,7 +429,7 @@ final class CaptureCoordinator: ObservableObject {
     private func performShare(session: PostCaptureSession) async {
         do {
             try await sharingService.share(
-                image: session.originalImage,
+                image: session.image,
                 from: panelPresenter.presentedWindow
             )
         } catch ScreenshotSharingError.cancelled {
@@ -449,7 +452,7 @@ final class CaptureCoordinator: ObservableObject {
         // Share flow started successfully — persist exactly once, then finish.
         await completeSession(
             id: session.id,
-            image: session.originalImage,
+            image: session.image,
             copyToClipboard: false,
             feedback: .panelStatus(PostCaptureStrings.sharedAndSaved)
         )
@@ -567,6 +570,7 @@ final class CaptureCoordinator: ObservableObject {
         }
 
         guard activeSession?.id == id else { return }
+        lastError = nil
         logger.info("Saved screenshot to \(record.url.path, privacy: .public)")
 
         switch feedback {

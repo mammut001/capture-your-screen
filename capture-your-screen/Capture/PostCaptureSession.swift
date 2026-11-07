@@ -16,6 +16,15 @@ struct PostCaptureSession: Identifiable {
     let createdAt: Date
     let sourceDisplayID: CGDirectDisplayID?
     let selectionRect: CGRect?
+    /// Last committed editor result, kept through copy/save failures so a retry
+    /// cannot silently revert to the unannotated screenshot.
+    private(set) var annotatedImage: NSImage?
+
+    var image: NSImage { annotatedImage ?? originalImage }
+
+    mutating func retainAnnotatedImage(_ image: NSImage) {
+        annotatedImage = image
+    }
 
     init(
         originalImage: NSImage,
@@ -31,10 +40,10 @@ struct PostCaptureSession: Identifiable {
 
     /// Best-effort pixel dimensions (Retina-aware) for display in the UI.
     var pixelSize: CGSize {
-        if let rep = originalImage.representations.first, rep.pixelsWide > 0, rep.pixelsHigh > 0 {
+        if let rep = image.representations.first, rep.pixelsWide > 0, rep.pixelsHigh > 0 {
             return CGSize(width: rep.pixelsWide, height: rep.pixelsHigh)
         }
-        return originalImage.size
+        return image.size
     }
 }
 

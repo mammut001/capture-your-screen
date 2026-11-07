@@ -33,11 +33,14 @@ final class ScreenshotStore: ObservableObject {
 
     let resolver: StorageResolver
     private let saveFormatProvider: @MainActor () -> SaveFormat
+    private let historyLoader: (@MainActor (URL) async -> [ScreenshotRecord])?
     private let folderWatcher = FolderWatcher()
     private var scheduledRefreshTask: Task<Void, Never>?
     private let refreshInterval: TimeInterval = 1.5
     private var hasLoadedHistory = false
     private var lastRefreshAt: Date?
+    private var historyRevision = UUID()
+    private var pendingHistoryRevision: UUID?
 
     private let dateFormatter: DateFormatter = {
         let f = DateFormatter()
@@ -55,10 +58,12 @@ final class ScreenshotStore: ObservableObject {
         resolver: StorageResolver? = nil,
         saveFormatProvider: @escaping @MainActor () -> SaveFormat = {
             SaveFormat.preferred()
-        }
+        },
+        historyLoader: (@MainActor (URL) async -> [ScreenshotRecord])? = nil
     ) {
         self.resolver = resolver ?? StorageResolver()
         self.saveFormatProvider = saveFormatProvider
+        self.historyLoader = historyLoader
         folderWatcher.onChange = { [weak self] in
             Task { @MainActor [weak self] in
                 self?.scheduleRefreshHistory()
@@ -97,9 +102,17 @@ final class ScreenshotStore: ObservableObject {
         }.value
 
         let record = ScreenshotRecord(url: fileURL, date: now)
+        // Saving may finish after the user switches folders. The file remains
+        // saved in its original destination, but must not enter another folder's history.
+        guard resolver.screenshotFolderURL?.standardizedFileURL == folderURL.standardizedFileURL else {
+            return record
+        }
+        invalidateScanAfterLocalMutation()
         let key = thumbnailCacheKey(for: record.url)
         publishThumbnail(thumbnail, forKey: key)
-        screenshots.insert(record, at: 0)
+        // A directory refresh can already have discovered the newly written file.
+        screenshots = (screenshots.filter { $0.id != record.id } + [record])
+            .sorted { $0.date > $1.date }
         startWatchingScreenshotFolder()
         return record
     }
@@ -232,7 +245,17 @@ final class ScreenshotStore: ObservableObject {
     // MARK: - History
 
     func refreshHistory() async {
-        lastRefreshAt = Date()
+        guard !Task.isCancelled else { return }
+        let revision = UUID()
+        historyRevision = revision
+        pendingHistoryRevision = revision
+        // A cancelled/superseded scan must not make an old list look freshly loaded.
+        lastRefreshAt = nil
+        defer {
+            if pendingHistoryRevision == revision {
+                pendingHistoryRevision = nil
+            }
+        }
 
         cancelAllThumbnailTasks()
 
@@ -257,30 +280,22 @@ final class ScreenshotStore: ObservableObject {
             return
         }
 
-        let formatter = dateFormatter
-        let records: [ScreenshotRecord] = await Task.detached(priority: .utility) {
-            var foundURLs: [URL] = []
-            let enumerator = fm.enumerator(
-                at: folderURL,
-                includingPropertiesForKeys: [.isRegularFileKey],
-                options: [.skipsHiddenFiles]
-            )
+        let records: [ScreenshotRecord]
+        if let historyLoader {
+            records = await historyLoader(folderURL)
+        } else {
+            records = await Task.detached(priority: .utility) {
+                Self.readHistory(in: folderURL)
+            }.value
+        }
 
-            while let url = enumerator?.nextObject() as? URL {
-                if SaveFormat.supportedFileExtensions.contains(url.pathExtension.lowercased()) {
-                    foundURLs.append(url)
-                }
-            }
-
-            return foundURLs.compactMap { url in
-                let filename = url.deletingPathExtension().lastPathComponent
-                guard filename.hasPrefix("Screenshot_") else { return nil }
-                let datePart = String(filename.dropFirst("Screenshot_".count))
-                guard let date = formatter.date(from: datePart) else { return nil }
-                return ScreenshotRecord(url: url, date: date)
-            }
-            .sorted { $0.date > $1.date }
-        }.value
+        // Detached scans outlive cancellation and can return out of order. A
+        // newer scan, local save/delete, or folder switch owns the current list.
+        guard !Task.isCancelled,
+              historyRevision == revision,
+              resolver.screenshotFolderURL?.standardizedFileURL == folderURL.standardizedFileURL else {
+            return
+        }
 
         let activeKeys = Set(records.map { thumbnailCacheKey(for: $0.url) })
         let pruned = thumbnailsByID.filter { activeKeys.contains($0.key) }
@@ -293,7 +308,37 @@ final class ScreenshotStore: ObservableObject {
             screenshots = records
         }
         hasLoadedHistory = true
+        lastRefreshAt = Date()
         startWatchingScreenshotFolder(forceRestart: true)
+    }
+
+    private nonisolated static func readHistory(in folderURL: URL) -> [ScreenshotRecord] {
+        let fm = FileManager.default
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd_HH-mm-ss_SSS"
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        var foundURLs: [URL] = []
+        let enumerator = fm.enumerator(
+            at: folderURL,
+            includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles]
+        )
+
+        while let url = enumerator?.nextObject() as? URL {
+            if SaveFormat.supportedFileExtensions.contains(url.pathExtension.lowercased()),
+               (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true {
+                foundURLs.append(url)
+            }
+        }
+
+        return foundURLs.compactMap { url in
+            let filename = url.deletingPathExtension().lastPathComponent
+            guard filename.hasPrefix("Screenshot_") else { return nil }
+            let datePart = String(filename.dropFirst("Screenshot_".count))
+            guard let date = formatter.date(from: datePart) else { return nil }
+            return ScreenshotRecord(url: url, date: date)
+        }
+        .sorted { $0.date > $1.date }
     }
 
     func refreshIfNeeded() async {
@@ -328,6 +373,12 @@ final class ScreenshotStore: ObservableObject {
     }
 
     func restartWatchingScreenshotFolder() {
+        historyRevision = UUID()
+        hasLoadedHistory = false
+        lastRefreshAt = nil
+        cancelAllThumbnailTasks()
+        screenshots = []
+        thumbnailsByID = [:]
         scheduledRefreshTask?.cancel()
         scheduledRefreshTask = nil
         folderWatcher.stop()
@@ -336,6 +387,8 @@ final class ScreenshotStore: ObservableObject {
     }
 
     func stopWatchingScreenshotFolder() {
+        historyRevision = UUID()
+        lastRefreshAt = nil
         scheduledRefreshTask?.cancel()
         scheduledRefreshTask = nil
         folderWatcher.stop()
@@ -352,6 +405,15 @@ final class ScreenshotStore: ObservableObject {
             guard !Task.isCancelled else { return }
             await self?.refreshHistory()
         }
+    }
+
+    private func invalidateScanAfterLocalMutation() {
+        historyRevision = UUID()
+        guard pendingHistoryRevision != nil else { return }
+        // A stale scan may contain older files not yet visible in the list.
+        // Replace it with a fresh scan instead of losing that initial history.
+        lastRefreshAt = nil
+        scheduleRefreshHistory(immediate: true)
     }
 
     // MARK: - Actions
@@ -381,15 +443,18 @@ final class ScreenshotStore: ObservableObject {
         }
         _ = try resolver.accessFolder()
         let key = thumbnailCacheKey(for: record.url)
+
+        // Update the visible state only after the file operation succeeds.
+        // Move to Trash so accidental history deletions can be recovered.
+        try FileManager.default.trashItem(at: record.url, resultingItemURL: nil)
+        invalidateScanAfterLocalMutation()
         clearThumbnailTask(forKey: key)
         var nextThumbs = thumbnailsByID
         nextThumbs.removeValue(forKey: key)
         thumbnailsByID = nextThumbs
 
-        // Move to Trash rather than unlinking so a mis-click in the history
-        // list (context menu or batch delete) is recoverable from Finder.
-        try FileManager.default.trashItem(at: record.url, resultingItemURL: nil)
         screenshots.removeAll { thumbnailCacheKey(for: $0.url) == key }
+        drainPendingThumbnailLoads()
     }
 
     // MARK: - Test / internal hooks
