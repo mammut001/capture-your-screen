@@ -172,6 +172,11 @@ final class CaptureCoordinator: ObservableObject {
                 self.clearFrozenCapture()
                 self.hotkeyManager.endCaptureKeyInterception()
                 self.currentCaptureSelection = nil
+                if ScreenCaptureError.isPermissionDenied(error) {
+                    self.state = .idle
+                    self.handlePermissionRevoked()
+                    return
+                }
                 self.notifier.postNotification(
                     title: PostCaptureStrings.captureFailedNotificationTitle,
                     body: error.localizedDescription
@@ -605,6 +610,17 @@ final class CaptureCoordinator: ObservableObject {
             presentPanel(for: session)
         }
         panelPresenter.showStatus(.failure(message))
+    }
+
+    /// TCC refused capture even though preflight may have said "granted"
+    /// (stale grant after re-signing). Re-request access and send the user
+    /// to System Settings to re-enable it.
+    private func handlePermissionRevoked() {
+        logger.warning("Screen Recording access declined by TCC; prompting user to re-grant")
+        lastError = ScreenCaptureError.permissionDenied
+        _ = permissionManager.requestScreenRecordingAccess()
+        _ = refreshPermissionStatus()
+        permissionManager.showPermissionAlert()
     }
 
     // MARK: - Lifecycle helpers

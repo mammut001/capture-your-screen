@@ -8,12 +8,25 @@ enum ScreenCaptureError: Error, LocalizedError {
     case noMainScreen
     case captureFailed
     case noDisplayFound
+    /// macOS TCC refused the capture (SCStreamError.userDeclined). Common after
+    /// the app is re-signed/updated: the old grant no longer matches.
+    case permissionDenied
+
+    /// True when `error` means Screen Recording access was refused.
+    static func isPermissionDenied(_ error: Error) -> Bool {
+        if let e = error as? ScreenCaptureError { return e == .permissionDenied }
+        if let e = error as? SCStreamError, e.code == .userDeclined { return true }
+        let ns = error as NSError
+        return ns.domain == SCStreamErrorDomain && ns.code == SCStreamError.Code.userDeclined.rawValue
+    }
 
     var errorDescription: String? {
         switch self {
         case .noMainScreen: return "No main screen available."
         case .captureFailed: return "Screen capture failed. Please ensure Screen Recording permission is granted."
         case .noDisplayFound: return "Could not find a suitable display to capture."
+        case .permissionDenied:
+            return "Screen Recording permission is missing or out of date. Re-enable it in System Settings, then restart the app."
         }
     }
 }
@@ -29,7 +42,7 @@ struct ScreenCapture {
     /// Used to freeze the screen *before* showing the selection overlay so
     /// transient UI (menu bar menus, popovers, tooltips) is preserved.
     static nonisolated func captureFullDisplay(displayID: CGDirectDisplayID? = nil) async throws -> NSImage {
-        let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
+        let content = try await shareableContent()
         let scDisplay = try resolveDisplay(displayID: displayID, in: content)
         let fullRect = CGRect(x: 0, y: 0, width: scDisplay.width, height: scDisplay.height)
         return try await captureRegion(fullRect, displayID: scDisplay.displayID, content: content, scDisplay: scDisplay)
@@ -41,12 +54,21 @@ struct ScreenCapture {
     ///   - displayID: The display to capture from. If nil, uses the primary display.
     /// Marked nonisolated to avoid deadlock when called from a main-actor context (local monitor / keyDown).
     static nonisolated func captureRegion(_ rect: CGRect, displayID: CGDirectDisplayID? = nil) async throws -> NSImage {
-        let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
+        let content = try await shareableContent()
         let scDisplay = try resolveDisplay(displayID: displayID, in: content)
         return try await captureRegion(rect, displayID: scDisplay.displayID, content: content, scDisplay: scDisplay)
     }
 
     // MARK: - Internals
+
+    /// Fetches shareable content, translating TCC refusals into `.permissionDenied`.
+    private static nonisolated func shareableContent() async throws -> SCShareableContent {
+        do {
+            return try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
+        } catch where ScreenCaptureError.isPermissionDenied(error) {
+            throw ScreenCaptureError.permissionDenied
+        }
+    }
 
     private static nonisolated func resolveDisplay(
         displayID: CGDirectDisplayID?,
